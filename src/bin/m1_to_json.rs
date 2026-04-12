@@ -3,21 +3,23 @@
 // Usage:  m1_to_json <file.m1>
 //
 // Output is a JSON object with the following top-level keys:
-//   "year"    — game year decoded from type-8 file header (turn + 2400)
-//   "player"  — player state from type-6 PlayerBlock (tech levels, homeworld idx)
-//   "planets" — list of planets visible to the player (from type-13 PlanetBlock)
-//   "waypoints" — waypoint records (from type-20 WaypointBlock)
+//   "year"      — game year decoded from type-8 file header (turn + 2400)
+//   "player"    — player state from type-6 PlayerBlock (tech levels, homeworld idx)
+//   "planets"   — list of planets visible to the player (from type-13 PlanetBlock)
+//   "fleets"    — fleet records (from type-16 FleetBlock)
+//   "waypoints" — waypoint records (from type-19 TaskWaypointBlock and type-20 WaypointBlock)
 //
 // This is the primary oracle comparison tool for Phase R2–R5 research.
 // It is built from the confirmed field offsets in:
 //   stars-reborn-research/docs/findings/binary_file_format.rst
 //
 // Record type name corrections (from XyliGUN's block type registry, 2011):
-//   type-16 = FleetBlock      (previously misidentified as "ship design")
-//   type-20 = WaypointBlock   (previously misidentified as "fleet")
-//   type-26 = DesignBlock     (previously "fleet/design aggregate") — confirmed
-//   type-30 = BattlePlanBlock (previously assumed "research data")
-//   type-34 = ResearchChangeBlock — this is the actual research record
+//   type-16 = FleetBlock         (previously misidentified as "ship design")
+//   type-19 = TaskWaypointBlock  (waypoint with task; same header as type-20, +10 task bytes)
+//   type-20 = WaypointBlock      (plain waypoint / goto / orbit)
+//   type-26 = DesignBlock
+//   type-30 = BattlePlanBlock    (previously assumed "research data")
+//   type-34 = ResearchChangeBlock
 //
 // Confirmed type-6 field layout (from Structure6.xml + oracle experiments):
 //   b0    : PlayerID
@@ -53,8 +55,10 @@
 //   parsing (DepletionLength + SurfaceLength bytes) not yet implemented.
 //   Surface minerals at b14-19 and population at b20+ confirmed for standard
 //   (non-depleted) case per Structure13.xml.
-// - FleetBlock (type-16): fleet name, ship count, design reference UNKNOWN.
-// - Type-30 BattlePlanBlock: full field layout unknown; renamed from "research".
+// - FleetBlock (type-16): fleet name encoding unknown; b15 high bit and
+//   b17-18 encoding may change when cargo is present.
+// - Type-19 task payload (b8-17): all zero for Colonize; task parameters for
+//   Transport, Remote Mining, etc. not yet mapped.
 
 use std::{env, path::Path, process};
 
@@ -66,32 +70,34 @@ use stars_file_parser::records::parse_file;
 /// One battle plan record (type-30 BattlePlanBlock).
 ///
 /// Confirmed field layout (from user-provided default plan settings + oracle cross-reference):
-///   b0  : plan_id = plan_index × 16 (0,16,32,48,64 for 5 default plans)
+///   b0  : plan_id = plan_index × 16 (0,16,32,48,64,80 for 6 plans)
 ///   b1  : tactic (0=Disengage, 1=Disengage if challenged, 3=Max net damage, 4=Max damage ratio)
 ///   b2  : targets packed byte: high nybble = secondary target, low nybble = primary target
-///          Target codes: 0=None/Disengage, 1=Any, 2=Starbase, 3=Armed Ships,
-///                        4=Bombers/Freighters, 5=Unarmed Ships (6=Fuel Transports, unverified)
+///          Target codes: 0=None, 1=Any, 2=Starbase, 3=Armed Ships, 4=Bombers/Freighters,
+///                        5=Unarmed Ships, 6=Fuel Transports, 7=Freighters
 ///   b3  : 0x02 for all default plans = "Everyone" (Attack Who setting)
 ///   b4  : remaining byte count (total_len - 5)
 ///   b5+ : unknown (possibly plan name in packed encoding; length varies by plan)
 ///
-/// Default plan verification:
-///   Default(0):       tactic=4, pri=3(Armed), sec=1(Any)    ✓
+/// Default plan verification (all 5 confirmed from oracle exp 2.2):
+///   Default(0):       tactic=4, pri=3(Armed), sec=1(Any)      ✓
 ///   Kill Starbase(1): tactic=4, pri=2(Starbase), sec=3(Armed) ✓
-///   Max-Defense(2):   tactic=3, pri=3(Armed), sec=4(Bombers) ✓
-///   Sniper(3):        tactic=1, pri=5(Unarmed), sec=0(None) ✓
-///   Chicken(4):       tactic=0, pri=1(Any), sec=0(None)     ✓
+///   Max-Defense(2):   tactic=3, pri=3(Armed), sec=4(Bombers)  ✓
+///   Sniper(3):        tactic=1, pri=5(Unarmed), sec=0(None)   ✓
+///   Chicken(4):       tactic=0, pri=1(Any), sec=0(None)       ✓
+///   Test(5) exp3:     tactic=3, pri=7(Freighters), sec=6(FuelTransports) ✓
 #[derive(Debug, Serialize)]
 struct BattlePlanRecord {
-    /// Plan index × 16 (0, 16, 32, 48, 64 for plans 0-4).
+    /// Plan index × 16 (0, 16, 32, 48, 64, 80 for plans 0-5).
     plan_id: u8,
     /// Tactic: 0=Disengage, 1=Disengage if challenged, 3=Max net damage, 4=Max damage ratio.
     tactic: u8,
-    /// Primary target code (low nybble of b2): 1=Any, 2=Starbase, 3=Armed Ships,
-    /// 4=Bombers/Freighters, 5=Unarmed Ships.
+    /// Primary target code (low nybble of b2):
+    /// 1=Any, 2=Starbase, 3=Armed Ships, 4=Bombers/Freighters,
+    /// 5=Unarmed Ships, 6=Fuel Transports, 7=Freighters.
     primary_target: u8,
-    /// Secondary target code (high nybble of b2): 0=None/Disengage, 1=Any,
-    /// 3=Armed Ships, 4=Bombers/Freighters.
+    /// Secondary target code (high nybble of b2):
+    /// 0=None, 1=Any, 3=Armed Ships, 4=Bombers/Freighters, 6=Fuel Transports, 7=Freighters.
     secondary_target: u8,
     /// Attack Who: 0x02 = Everyone for all default plans.
     attack_who: u8,
@@ -174,47 +180,81 @@ struct PlanetRecord {
 
 /// One fleet record (type-16 FleetBlock).
 ///
-/// Confirmed field layout (from dump_m1.py analysis + oracle cross-reference):
+/// Confirmed field layout (from oracle experiments exp2.2 and exp3):
 ///   b0-1  : fleet index (LE uint16)
-///   b6-7  : current orbit planet index (LE uint16)
-///   b8-9  : fleet X coordinate (LE int16) — confirmed across 3 experiments
-///   b10-11: fleet Y coordinate (LE int16) — confirmed: exp1 Y=1220, exp2.1 Y=1266, exp2.2 Y=1331
-///   b12-13: design bitmask (bit i set → design slot i+1 present in fleet)
-///   b14-15: number of design stacks (1 for homogeneous single-design fleets)
+///   b6-7  : current orbit planet index (LE uint16); 65535 = en route (deep space)
+///   b8-9  : fleet X coordinate (LE int16)
+///   b10-11: fleet Y coordinate (LE int16) — confirmed: Sulfur Y=1220, Godel Y=1331
+///   b12-13: design bitmask (bit i set → design slot i present in fleet)
+///   b14-15: number of stacks (b14 = actual count; b15 high bit may indicate cargo)
 ///   b16   : total ship count
-///   b17-18: total fleet mass in kT (LE int16)
+///   b17-18: total fleet mass in kT (LE int16; high bits may be set when cargo present)
+///
+///   Trailing bytes (confirmed from exp2.2 vs exp3 differential):
+///     22-byte records: b19-20=0, b21=waypoint_count
+///     23-byte records: b19-20=0, b21=battle_plan_idx (0-based), b22=waypoint_count
+///   Note: records grow from 22→23 bytes when fleet has cargo or multiple ships.
 #[derive(Debug, Serialize)]
 struct FleetRecord {
     fleet_index: u16,
-    /// Planet currently orbited (LE uint16).
+    /// Planet currently orbited (LE uint16); 65535 = en route / deep space.
     orbit_planet_idx: u16,
+    /// True when orbit_planet_idx == 65535 (fleet is moving between planets).
+    en_route: bool,
     x: i16,
     y: i16,
-    /// Bitmask of design slots used; bit 0 = design 1, bit 1 = design 2, etc.
+    /// Bitmask of design slots used (bit 0 = slot 0, bit 1 = slot 1, …).
     design_bitmask: u16,
     /// Number of distinct design stacks in this fleet.
     num_stacks: u16,
     /// Total number of ships across all stacks.
     ship_count: u8,
-    /// Total fleet mass in kT.
+    /// Total fleet mass in kT (LE int16; high bits may encode cargo info when cargo present).
     total_mass_kt: i16,
+    /// 0-based index into player's battle plan list (present only in 23-byte records).
+    /// 0=Default, 1=Kill Starbase, 2=Max-Defense, 3=Sniper, 4=Chicken, 5+=custom.
+    battle_plan_idx: Option<u8>,
+    /// Number of waypoints for this fleet (including current-position waypoint when en route).
+    waypoint_count: u8,
 }
 
-/// One waypoint record (type-20 WaypointBlock).
+/// One waypoint record (type-19 TaskWaypointBlock or type-20 WaypointBlock).
+///
+/// Both types share the same 8-byte header layout:
+///   b0-1: waypoint X (LE int16)
+///   b2-3: waypoint Y (LE int16)
+///   b4-5: target planet index (LE int16; 0 = deep space / no planet)
+///   b6  : (warp_speed << 4) | task_type
+///           warp_speed: high nybble (0=orbit/stopped, 1-10=warp N) — confirmed at warp 4 and 6
+///           task_type:  low nybble (0=none, 1=Transport, 2=Colonize, 3=Remote Mining,
+///                        4=Merge with Fleet, 5=Scrap Fleet, 6=Lay Mine Field,
+///                        7=Patrol, 8=Route, 9=Transfer Fleet)
+///   b7  : unknown (bit 2 set = this is the "current position" waypoint for en-route fleets;
+///                  high nybble varies per fleet type; not battle plan assignment)
+///
+/// Type-19 has an additional 10 bytes (b8-17) for task parameters; all zero for Colonize.
 #[derive(Debug, Serialize)]
 struct WaypointRecord {
-    /// Waypoint X coordinate (bytes 0-1 LE int16, confirmed).
+    /// Waypoint X coordinate (bytes 0-1 LE int16).
     x: i16,
-    /// Waypoint Y coordinate (bytes 2-3 LE int16, confirmed across 3 experiments).
+    /// Waypoint Y coordinate (bytes 2-3 LE int16).
     y: i16,
-    /// Target planet index, or -1 if deep space (bytes 4-5 LE int16, confirmed).
+    /// Target planet index (bytes 4-5 LE int16; 0 = deep space / en-route current position).
     planet_index: i16,
-    // b7: unknown byte (not battle plan assignment — all fleets use Default at turn 1;
-    // varies by fleet: 0x11=most, 0xd1=scout fleet 0, 0xf1=Cotton Picker in JOAT).
-    // Suspected to encode warp speed + task type; needs oracle with explicit waypoint.
+    /// Warp speed: 0 = orbit/stationary, 1-10 = warp N (b6 >> 4).
+    warp_speed: u8,
+    /// Waypoint task type (b6 & 0xF): 0=none, 1=Transport, 2=Colonize, 3=Remote Mining,
+    /// 4=Merge with Fleet, 5=Scrap Fleet, 6=Lay Mine Field, 7=Patrol, 8=Route, 9=Transfer Fleet.
+    task_type: u8,
+    /// True if this waypoint represents the fleet's current position (bit 2 of b7 set).
+    /// Always the first waypoint for en-route fleets; warp_speed and task_type are 0 for it.
+    is_current_position: bool,
+    /// True if decoded from a type-19 TaskWaypointBlock (has task payload at b8-17).
+    /// False if decoded from a type-20 WaypointBlock (plain goto / orbit).
+    has_task_payload: bool,
 }
 
-/// Complete turn-1 state extracted from one .m1 file.
+/// Complete turn state extracted from one .m1 file.
 #[derive(Debug, Serialize)]
 struct TurnState {
     /// Game year (type-8 header payload bytes 10-11 as LE uint16, + 2400).
@@ -223,7 +263,9 @@ struct TurnState {
     planets: Vec<PlanetRecord>,
     /// Fleet records (type-16 FleetBlock).
     fleets: Vec<FleetRecord>,
-    /// Waypoint records (type-20 WaypointBlock).
+    /// Waypoint records (type-19 TaskWaypointBlock and type-20 WaypointBlock), in file order.
+    /// Each fleet's waypoints follow its type-16 record; the first waypoint for an en-route
+    /// fleet is the current position (is_current_position=true, warp_speed=0).
     waypoints: Vec<WaypointRecord>,
 }
 
@@ -355,24 +397,45 @@ fn decode_type13(p: &[u8]) -> Option<PlanetRecord> {
 
 fn decode_type16(p: &[u8]) -> Option<FleetRecord> {
     if p.len() < 19 { return None; }
+    let orbit = u16::from_le_bytes([p[6], p[7]]);
+    // Trailing bytes encode battle plan and waypoint count.
+    // 22-byte record: b19-20=0, b21=waypoint_count
+    // 23-byte record: b19-20=0, b21=battle_plan_idx, b22=waypoint_count
+    let (battle_plan_idx, waypoint_count) = match p.len() {
+        22 => (None,         if p.len() > 21 { p[21] } else { 0 }),
+        23 => (if p.len() > 21 { Some(p[21]) } else { None },
+               if p.len() > 22 { p[22] } else { 0 }),
+        _  => (None, 0),
+    };
     Some(FleetRecord {
         fleet_index:     u16::from_le_bytes([p[0], p[1]]),
-        orbit_planet_idx: u16::from_le_bytes([p[6], p[7]]),
+        orbit_planet_idx: orbit,
+        en_route:        orbit == 65535,
         x:               i16::from_le_bytes([p[8], p[9]]),
         y:               i16::from_le_bytes([p[10], p[11]]),
         design_bitmask:  u16::from_le_bytes([p[12], p[13]]),
         num_stacks:      u16::from_le_bytes([p[14], p[15]]),
         ship_count:      p[16],
         total_mass_kt:   i16::from_le_bytes([p[17], p[18]]),
+        battle_plan_idx,
+        waypoint_count,
     })
 }
 
-fn decode_type20(p: &[u8]) -> Option<WaypointRecord> {
-    if p.len() < 6 { return None; }
+/// Decode a type-19 or type-20 waypoint payload.
+/// `has_task_payload` is true for type-19 (b8-17 hold task parameters).
+fn decode_waypoint(p: &[u8], has_task_payload: bool) -> Option<WaypointRecord> {
+    if p.len() < 8 { return None; }
+    let b6 = p[6];
+    let b7 = p[7];
     Some(WaypointRecord {
-        x:            i16::from_le_bytes([p[0], p[1]]),
-        y:            i16::from_le_bytes([p[2], p[3]]),
-        planet_index: i16::from_le_bytes([p[4], p[5]]),
+        x:                   i16::from_le_bytes([p[0], p[1]]),
+        y:                   i16::from_le_bytes([p[2], p[3]]),
+        planet_index:        i16::from_le_bytes([p[4], p[5]]),
+        warp_speed:          b6 >> 4,
+        task_type:           b6 & 0xF,
+        is_current_position: (b7 & 0x04) != 0,
+        has_task_payload,
     })
 }
 
@@ -440,8 +503,13 @@ fn main() {
                     fleets.push(fleet);
                 }
             }
+            19 => {
+                if let Some(wp) = decode_waypoint(&rec.payload, true) {
+                    waypoints.push(wp);
+                }
+            }
             20 => {
-                if let Some(wp) = decode_type20(&rec.payload) {
+                if let Some(wp) = decode_waypoint(&rec.payload, false) {
                     waypoints.push(wp);
                 }
             }

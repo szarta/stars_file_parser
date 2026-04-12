@@ -7,9 +7,8 @@
 //
 // Known limitations
 // -----------------
-// - `lrts` is always `[]`.  Bytes 78-79 of the payload encode LRTs and the
-//   icon index, but their exact bit layout is not yet confirmed (R1.2).
-// - `icon_index` is always 0 for the same reason.
+// - `lrts` is always `[]`.  Bytes 78-79 of the payload encode LRTs in an
+//   unknown bit layout (R1.2 — LRT part still pending).
 // - Gravity values use the Gravity_Map lookup table from habitability.rst.
 //   Indices 1, 3, 5, 7, and 10 are "unreachable" in the original game; they
 //   are assigned the nearest reachable value.
@@ -153,7 +152,7 @@ fn race_from_payload(p: &[u8]) -> Result<Race, String> {
         plural_name,
         prt: Prt::from_byte(p[76])
             .ok_or_else(|| format!("unknown PRT byte {}", p[76]))?,
-        lrts: vec![], // bytes 78-79 encoding unconfirmed; see R1.2
+        lrts: vec![], // bytes 78-79 encoding unconfirmed; see R1.2 (LRT part)
         hab: HabPreferences {
             gravity:     decode_hab_axis(p[16], p[19], p[22], 0),
             temperature: decode_hab_axis(p[17], p[20], p[23], 1),
@@ -178,7 +177,9 @@ fn race_from_payload(p: &[u8]) -> Result<Race, String> {
             electronics:   tech(p[74])?,
             biotechnology: tech(p[75])?,
         },
-        icon_index: 0, // bytes 78-79 encoding unconfirmed; see R1.2
+        // payload[6]: bits 3-7 = icon_1idx mod 32, bits 0-2 = 0b111 (constant).
+        // icon_0idx = ((payload[6] >> 3) - 1) & 0x1F  (0-indexed, 0-31)
+        icon_index: (((p[6] >> 3) as u32).wrapping_sub(1)) & 0x1F,
     })
 }
 
