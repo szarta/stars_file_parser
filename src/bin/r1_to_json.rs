@@ -16,7 +16,7 @@
 use std::{env, path::Path, process};
 
 use stars_file_parser::{
-    race::{Economy, HabAxis, HabPreferences, Prt, Race, ResearchCosts, TechCost},
+    race::{Economy, HabAxis, HabPreferences, Lrt, Prt, Race, ResearchCosts, TechCost},
     records::{first_payload_of_type, parse_file},
 };
 
@@ -133,6 +133,42 @@ fn decode_names(payload: &[u8]) -> (String, String) {
     (singular, plural)
 }
 
+// ── LRT decoder ──────────────────────────────────────────────────────────────
+//
+// 16-bit LE word at payload[78..80].  Each LRT occupies exactly one bit.
+// Confirmed by single-LRT differential experiments (2026-04-11).
+// MA (Mineral Alchemy, standard bit 13) is not yet confirmed; bit 4 of the
+// word is the only unassigned bit in [78] and is the likely location.
+//
+// file_bit → LRT (all 14 confirmed 2026-04-11):
+//   0→IFE  1→TT   2→ARM  3→ISB  4→GR   5→UR   6→MA   7→NRE
+//   8→CE   9→OBRM 10→NAS 11→LSP 12→BET 13→RS
+// Bits 14-15 are unused.
+
+fn decode_lrts(b78: u8, b79: u8) -> Vec<Lrt> {
+    let word = (b78 as u16) | ((b79 as u16) << 8);
+    const BITS: &[(u8, Lrt)] = &[
+        (0,  Lrt::IFE),
+        (1,  Lrt::TT),
+        (2,  Lrt::ARM),
+        (3,  Lrt::ISB),
+        (4,  Lrt::GR),
+        (5,  Lrt::UR),
+        (6,  Lrt::MA),
+        (7,  Lrt::NRE),
+        (8,  Lrt::CE),
+        (9,  Lrt::OBRM),
+        (10, Lrt::NAS),
+        (11, Lrt::LSP),
+        (12, Lrt::BET),
+        (13, Lrt::RS),
+    ];
+    BITS.iter()
+        .filter(|(bit, _)| word & (1 << bit) != 0)
+        .map(|(_, lrt)| lrt.clone())
+        .collect()
+}
+
 // ── Race decoder ─────────────────────────────────────────────────────────────
 
 fn race_from_payload(p: &[u8]) -> Result<Race, String> {
@@ -152,7 +188,7 @@ fn race_from_payload(p: &[u8]) -> Result<Race, String> {
         plural_name,
         prt: Prt::from_byte(p[76])
             .ok_or_else(|| format!("unknown PRT byte {}", p[76]))?,
-        lrts: vec![], // bytes 78-79 encoding unconfirmed; see R1.2 (LRT part)
+        lrts: decode_lrts(p[78], p[79]),
         hab: HabPreferences {
             gravity:     decode_hab_axis(p[16], p[19], p[22], 0),
             temperature: decode_hab_axis(p[17], p[20], p[23], 1),
