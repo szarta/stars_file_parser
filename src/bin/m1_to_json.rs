@@ -4,9 +4,8 @@
 //
 // Output is a JSON object with the following top-level keys:
 //   "year"    — game year decoded from type-8 file header (turn + 2400)
-//   "player"  — homeworld coords + type-30 records (see note below)
+//   "player"  — player state from type-6 PlayerBlock (tech levels, homeworld idx)
 //   "planets" — list of planets visible to the player (from type-13 PlanetBlock)
-//   "fleets"  — fleet positions (from type-16 FleetBlock)
 //   "waypoints" — waypoint records (from type-20 WaypointBlock)
 //
 // This is the primary oracle comparison tool for Phase R2–R5 research.
@@ -20,21 +19,42 @@
 //   type-30 = BattlePlanBlock (previously assumed "research data")
 //   type-34 = ResearchChangeBlock — this is the actual research record
 //
-// NOTE on type-30 ("player.research" output):
-//   Field layout at bytes 0 (field_id) and 1 (level) was mapped against
-//   tutorial data and appeared to encode tech fields 0-5 with level values.
-//   XyliGUN identifies type-30 as BattlePlanBlock; current tech levels are
-//   more likely encoded in type-6 (PlayerBlock, 131 bytes, mostly unexplored).
-//   The "research" output here is kept for continuity but needs re-verification.
+// Confirmed type-6 field layout (from Structure6.xml + oracle experiments):
+//   b0    : PlayerID
+//   b1    : ShipSlotsUsed
+//   b2-3  : PlanetCount (LE uint16)
+//   b4-5  : FleetAndStarBaseDesignCount (LE uint16; 12 bits fleet + 4 bits starbase)
+//   b6    : Logo/FullRace flags
+//   b7    : Unknown (always 1)
+//   b8-9  : Homeworld planet index (LE uint16) — confirmed IT=73, JOAT=52
+//   b10-11: Homeworld rank (LE uint16)
+//   b12-15: PasswordHash (4 bytes)
+//   b16   : CentreGravity hab setting
+//   b17   : CentreTemperature hab setting
+//   b18   : CentreRadiation hab setting
+//   b19   : LowGravity
+//   b20   : LowTemperature
+//   b21   : LowRadiation
+//   b22   : HighGravity
+//   b23   : HighTemperature
+//   b24   : HighRadiation
+//   b25   : GrowthRate
+//   b26   : EnergyLevel — confirmed (IT=0, JOAT=3)
+//   b27   : WeaponsLevel — confirmed (IT=0, JOAT=3)
+//   b28   : PropulsionLevel — confirmed (IT=5, JOAT=3)
+//   b29   : ConstructionLevel — confirmed (IT=5, JOAT=3)
+//   b30   : ElectronicsLevel — confirmed (IT=0, JOAT=3)
+//   b31   : BiologyLevel — confirmed (IT=0, JOAT=3)
 //
 // Known limitations / TODOs
 // -------------------------------------------------------------------------
-// - Planet record (type-13): b14-15, b18-19, b20-21 offsets TBD (surface
-//   ironium/germanium, population — ordering unknown).
+// - Planet record (type-13): uses simplified fixed-offset decoding that only
+//   works for non-depleted, non-terraformed planets. Full variable-length
+//   parsing (DepletionLength + SurfaceLength bytes) not yet implemented.
+//   Surface minerals at b14-19 and population at b20+ confirmed for standard
+//   (non-depleted) case per Structure13.xml.
 // - FleetBlock (type-16): fleet name, ship count, design reference UNKNOWN.
-// - Type-6 PlayerBlock (131 bytes): tech levels, race traits, other player
-//   data mostly unexplored.
-// - Type-30 "research" vs BattlePlanBlock: needs re-investigation.
+// - Type-30 BattlePlanBlock: full field layout unknown; renamed from "research".
 
 use std::{env, path::Path, process};
 
@@ -43,25 +63,47 @@ use stars_file_parser::records::parse_file;
 
 // ── Output types ─────────────────────────────────────────────────────────────
 
-/// One tech field from a type-30 research record.
+/// One battle plan record (type-30 BattlePlanBlock).
+///
+/// Previously labelled "TechField" / "research" because field_id values 0-5
+/// superficially resembled tech field indices.  XyliGUN's type registry and
+/// the discovery of actual tech levels in type-6 bytes 26-31 confirm that
+/// type-30 = BattlePlanBlock.  The field_id values (0, 16, 32, 48, 64 — all
+/// multiples of 16) are consistent with battle plan ID encoding, not tech
+/// fields (which would be 0-5).  Full layout still unknown.
 #[derive(Debug, Serialize)]
-struct TechField {
-    /// Raw field id byte (0–5 expected).  Mapping to name unconfirmed; see
-    /// binary_file_format.rst type-30 notes.
-    field_id: u8,
-    level: u8,
-    // TODO: resources_to_next_level (bytes unknown in type-30 payload)
+struct BattlePlanRecord {
+    /// Battle plan ID byte (multiples of 16: 0,16,32,48,64 for 5 default plans).
+    plan_id: u8,
+    /// Aggressiveness / order type (0-4: 0=disengage, 4=maximise damage).
+    order_type: u8,
+    // TODO: full battle plan field layout (target, primary target, etc.)
 }
 
 /// Player-visible state extracted from the .m1 file.
 #[derive(Debug, Serialize)]
 struct PlayerState {
-    /// Y coordinate of the homeworld (type-6 bytes 3-4 LE int16, confirmed).
-    homeworld_y: Option<i16>,
-    /// X coordinate of the homeworld (type-16 bytes 8-9 LE int16, confirmed).
+    /// Homeworld planet index (type-6 bytes 8-9 LE uint16, confirmed: IT=73, JOAT=52).
+    homeworld_planet_idx: Option<u16>,
+    /// X coordinate of the homeworld fleet (type-16 bytes 8-9 LE int16, valid at turn 1).
     homeworld_x: Option<i16>,
-    /// One entry per type-30 record.
-    research: Vec<TechField>,
+
+    // ── Tech levels from type-6 bytes 26-31 (confirmed against oracle experiments) ──
+    /// Energy tech level — type-6 byte 26 (confirmed: IT=0, JOAT=3).
+    tech_energy: Option<u8>,
+    /// Weapons tech level — type-6 byte 27 (confirmed: IT=0, JOAT=3).
+    tech_weapons: Option<u8>,
+    /// Propulsion tech level — type-6 byte 28 (confirmed: IT=5, JOAT=3).
+    tech_propulsion: Option<u8>,
+    /// Construction tech level — type-6 byte 29 (confirmed: IT=5, JOAT=3).
+    tech_construction: Option<u8>,
+    /// Electronics tech level — type-6 byte 30 (confirmed: IT=0, JOAT=3).
+    tech_electronics: Option<u8>,
+    /// Biology tech level — type-6 byte 31 (confirmed: IT=0, JOAT=3).
+    tech_biology: Option<u8>,
+
+    /// One entry per type-30 BattlePlanBlock record.
+    battle_plans: Vec<BattlePlanRecord>,
 }
 
 /// One planet record (type-13).
@@ -88,20 +130,23 @@ struct PlanetRecord {
     radiation: Option<u8>,
 
     // ── Confirmed colonised-only fields ───────────────────────────────────
-    /// Surface boranium in kT (bytes 16-17 LE int16, confirmed).
-    surface_boranium: Option<i16>,
-    /// Number of mines (bytes 24-25 LE int16, confirmed).
-    mines: Option<i16>,
-
-    // ── TODO: resolve remaining colonised offsets ─────────────────────────
-    /// Surface ironium in kT.  Likely b14-15 or b18-19 — offset TBD.
-    surface_ironium: Option<i16>,
-    /// Surface germanium in kT.  Likely b14-15 or b18-19 — offset TBD.
-    surface_germanium: Option<i16>,
-    /// Colony population.  Likely b20-21 (kilo-colonists × 100) — offset TBD.
+    // NOTE: These fixed offsets assume SurfaceLength byte = 0xAA (2 bytes each
+    // for iron/boran/germ/pop) and no depletion bytes. This holds for standard
+    // non-depleted planets. Full variable-length parsing (per Structure13.xml)
+    // not yet implemented.
+    /// Surface ironium in kT (bytes 14-15 LE uint16, confirmed per Structure13.xml).
+    surface_ironium: Option<u16>,
+    /// Surface boranium in kT (bytes 16-17 LE uint16, confirmed).
+    surface_boranium: Option<u16>,
+    /// Surface germanium in kT (bytes 18-19 LE uint16, confirmed per Structure13.xml).
+    surface_germanium: Option<u16>,
+    /// Colony population in units of 100 colonists (bytes 20-21 LE uint16).
+    /// Actual colonists = value × 100.  Width may be 1 byte if population < 256.
     population: Option<u32>,
-    /// Number of factories.  Offset unknown.
-    factories: Option<i16>,
+    /// Number of mines (bytes 24-25 LE uint16, confirmed).
+    mines: Option<u16>,
+    /// Number of factories — offset unconfirmed (follows mines in Installations block).
+    factories: Option<u16>,
 }
 
 /// One waypoint record (type-20, WaypointBlock).
@@ -127,24 +172,45 @@ struct TurnState {
     year: u32,
     player: PlayerState,
     planets: Vec<PlanetRecord>,
-    /// Waypoint records (type-20 WaypointBlock). Previously labelled "fleets"
-    /// but XyliGUN's registry identifies type-20 as WaypointBlock.
+    /// Waypoint records (type-20 WaypointBlock).
     waypoints: Vec<WaypointRecord>,
 }
 
 // ── Record decoders ───────────────────────────────────────────────────────────
 
-fn read_i16_le(p: &[u8], off: usize) -> Option<i16> {
+fn read_u16_le(p: &[u8], off: usize) -> Option<u16> {
     if off + 2 <= p.len() {
-        Some(i16::from_le_bytes([p[off], p[off + 1]]))
+        Some(u16::from_le_bytes([p[off], p[off + 1]]))
     } else {
         None
     }
 }
 
-fn decode_type6(p: &[u8]) -> Option<i16> {
-    // bytes 3-4: homeworld Y coordinate (LE int16), confirmed.
-    read_i16_le(p, 3)
+fn read_i16_le(p: &[u8], off: usize) -> Option<i16> {
+    read_u16_le(p, off).map(|v| v as i16)
+}
+
+/// Decode a type-6 PlayerBlock into player state.
+///
+/// Confirmed layout (from Structure6.xml + oracle experiments):
+///   b8-9  : Homeworld planet index (LE uint16)
+///   b26   : EnergyLevel       (IT=0, JOAT=3)
+///   b27   : WeaponsLevel      (IT=0, JOAT=3)
+///   b28   : PropulsionLevel   (IT=5, JOAT=3)
+///   b29   : ConstructionLevel (IT=5, JOAT=3)
+///   b30   : ElectronicsLevel  (IT=0, JOAT=3)
+///   b31   : BiologyLevel      (IT=0, JOAT=3)
+fn decode_type6(p: &[u8]) -> (Option<u16>, [Option<u8>; 6]) {
+    let hw_idx = read_u16_le(p, 8);
+    let techs = [
+        if p.len() > 26 { Some(p[26]) } else { None }, // energy
+        if p.len() > 27 { Some(p[27]) } else { None }, // weapons
+        if p.len() > 28 { Some(p[28]) } else { None }, // propulsion
+        if p.len() > 29 { Some(p[29]) } else { None }, // construction
+        if p.len() > 30 { Some(p[30]) } else { None }, // electronics
+        if p.len() > 31 { Some(p[31]) } else { None }, // biology
+    ];
+    (hw_idx, techs)
 }
 
 fn decode_type13(p: &[u8]) -> Option<PlanetRecord> {
@@ -152,27 +218,34 @@ fn decode_type13(p: &[u8]) -> Option<PlanetRecord> {
         return None;
     }
     let index = u16::from_le_bytes([p[0], p[1]]);
-    // Uninhabited = 11 bytes; colonised = 34 bytes.
-    let colonized = p.len() >= 34;
+    // Colonised records are longer than uninhabited (11-byte) records.
+    // Exact length varies with SurfaceLength flags + depletion bytes; the
+    // surface mineral fields below assume the common non-depleted case where
+    // the SurfaceLength byte (b13) encodes 2 bytes for each mineral and
+    // population (0xAA or 0x6A).  Full variable-length parsing is TODO.
+    let colonized = p.len() > 11;
 
     Some(PlanetRecord {
         index,
         colonized,
-        // b5-b10 are present in both uninhabited (11 bytes) and colonised (34 bytes).
+        // b5-b10 present in both uninhabited and colonised records.
         conc_ironium:      if p.len() > 5  { Some(p[5])  } else { None },
         conc_boranium:     if p.len() > 6  { Some(p[6])  } else { None },
         conc_germanium:    if p.len() > 7  { Some(p[7])  } else { None },
         gravity:           if p.len() > 8  { Some(p[8])  } else { None },
         temperature:       if p.len() > 9  { Some(p[9])  } else { None },
         radiation:         if p.len() > 10 { Some(p[10]) } else { None },
-        // Colonised-only fields.
-        surface_boranium:  if colonized { read_i16_le(p, 16) } else { None },
-        mines:             if colonized { read_i16_le(p, 24) } else { None },
-        // TODO: resolve b14-15 (surf_iron or surf_germ?), b18-19, b20-21 (population?)
-        surface_ironium:   None,
-        surface_germanium: None,
-        population:        None,
-        factories:         None,
+        // Colonised-only surface mineral fields (confirmed offsets for non-depleted planets).
+        // Offset layout: b13=SurfaceLength, then 2 bytes each: iron, boran, germ, pop.
+        surface_ironium:   if colonized { read_u16_le(p, 14) } else { None },
+        surface_boranium:  if colonized { read_u16_le(p, 16) } else { None },
+        surface_germanium: if colonized { read_u16_le(p, 18) } else { None },
+        population:        if colonized { read_u16_le(p, 20).map(|v| v as u32) } else { None },
+        // TODO: mines and factories are in the variable-offset Installations block that
+        // follows the surface minerals.  Exact start byte depends on SurfaceLength (b13),
+        // DepletionLength (b4), and PlanetInfo flags.  Not yet decoded.
+        mines:     None,
+        factories: None,
     })
 }
 
@@ -195,13 +268,13 @@ fn decode_type20(p: &[u8]) -> Option<WaypointRecord> {
     })
 }
 
-fn decode_type30(p: &[u8]) -> Option<TechField> {
+fn decode_type30(p: &[u8]) -> Option<BattlePlanRecord> {
     if p.len() < 2 {
         return None;
     }
-    Some(TechField {
-        field_id: p[0],
-        level:    p[1],
+    Some(BattlePlanRecord {
+        plan_id:    p[0],
+        order_type: p[1],
     })
 }
 
@@ -226,9 +299,10 @@ fn main() {
     });
 
     let mut year: u32 = 2400; // overwritten when type-8 header is seen
-    let mut homeworld_y: Option<i16> = None;
+    let mut homeworld_planet_idx: Option<u16> = None;
     let mut homeworld_x: Option<i16> = None;
-    let mut research: Vec<TechField> = Vec::new();
+    let mut techs: [Option<u8>; 6] = [None; 6];
+    let mut battle_plans: Vec<BattlePlanRecord> = Vec::new();
     let mut planets: Vec<PlanetRecord> = Vec::new();
     let mut waypoints: Vec<WaypointRecord> = Vec::new();
 
@@ -243,8 +317,10 @@ fn main() {
                 }
             }
             6 => {
-                if homeworld_y.is_none() {
-                    homeworld_y = decode_type6(&rec.payload);
+                if homeworld_planet_idx.is_none() {
+                    let (hw_idx, t) = decode_type6(&rec.payload);
+                    homeworld_planet_idx = hw_idx;
+                    techs = t;
                 }
             }
             13 => {
@@ -259,16 +335,14 @@ fn main() {
                 }
             }
             20 => {
-                // WaypointBlock (previously misidentified as fleet record).
                 if let Some(wp) = decode_type20(&rec.payload) {
                     waypoints.push(wp);
                 }
             }
             30 => {
-                // BattlePlanBlock per XyliGUN's registry; kept as "research" for
-                // now but field mapping needs re-investigation against type-6.
-                if let Some(tf) = decode_type30(&rec.payload) {
-                    research.push(tf);
+                // BattlePlanBlock per XyliGUN's registry.
+                if let Some(bp) = decode_type30(&rec.payload) {
+                    battle_plans.push(bp);
                 }
             }
             _ => {}
@@ -277,7 +351,17 @@ fn main() {
 
     let turn = TurnState {
         year,
-        player: PlayerState { homeworld_x, homeworld_y, research },
+        player: PlayerState {
+            homeworld_planet_idx,
+            homeworld_x,
+            tech_energy:       techs[0],
+            tech_weapons:      techs[1],
+            tech_propulsion:   techs[2],
+            tech_construction: techs[3],
+            tech_electronics:  techs[4],
+            tech_biology:      techs[5],
+            battle_plans,
+        },
         planets,
         waypoints,
     };
