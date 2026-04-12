@@ -57,8 +57,9 @@
 //   (non-depleted) case per Structure13.xml.
 // - FleetBlock (type-16): fleet name encoding unknown; b15 high bit and
 //   b17-18 encoding may change when cargo is present.
-// - Type-19 task payload (b8-17): all zero for Colonize; task parameters for
-//   Transport, Remote Mining, etc. not yet mapped.
+// - Type-19 task payload (b8-17): Transport fully confirmed (exp4); payload
+//   decoded into TransportPayload struct.  Colonize payload is all zero.
+//   Other task types (Remote Mining, Patrol, etc.) not yet decoded.
 
 use std::{env, path::Path, process};
 
@@ -101,6 +102,42 @@ struct BattlePlanRecord {
     secondary_target: u8,
     /// Attack Who: 0x02 = Everyone for all default plans.
     attack_who: u8,
+}
+
+/// Per-resource cargo operation within a Transport task.
+///
+/// Encoded as two consecutive bytes in the type-19 payload (confirmed exp4):
+///   byte_lo = amount & 0xFF
+///   byte_hi = (action << 4) | ((amount >> 8) & 0xF)
+///
+/// Action codes (0=confirmed absent, 3=confirmed; 1,2,4,5 hypothesised):
+///   0 = No change, 1 = Unload All, 2 = Load All, 3 = Load Exactly,
+///   4 = Unload Exactly, 5 = Fill Up To
+#[derive(Debug, Serialize)]
+struct ResourceOp {
+    /// Amount in kT (0–4095).
+    amount: u16,
+    /// Action code: 0=No change, 1=Unload All, 2=Load All, 3=Load Exactly,
+    /// 4=Unload Exactly, 5=Fill Up To.
+    action: u8,
+}
+
+/// Transport task payload decoded from type-19 bytes b8-17 (10 bytes, 5 × 2).
+///
+/// Confirmed from exp4 (Teamster→Silicon: Load Exactly 10 Iron, 20 Boran, 30 Germ):
+///   b8-9:   ironium   (10kT, action=3=Load Exactly) ✓
+///   b10-11: boranium  (20kT, action=3) ✓
+///   b12-13: germanium (30kT, action=3) ✓
+///   b14-15: colonists (0,    action=0) ✓
+///   b16-17: fuel      (0,    action=0) ✓
+#[derive(Debug, Serialize)]
+struct TransportPayload {
+    ironium:   ResourceOp,
+    boranium:  ResourceOp,
+    germanium: ResourceOp,
+    /// Colonists, in units of 100 (same as population elsewhere in the format).
+    colonists: ResourceOp,
+    fuel:      ResourceOp,
 }
 
 /// Player-visible state extracted from the .m1 file.
@@ -232,7 +269,10 @@ struct FleetRecord {
 ///   b7  : unknown (bit 2 set = this is the "current position" waypoint for en-route fleets;
 ///                  high nybble varies per fleet type; not battle plan assignment)
 ///
-/// Type-19 has an additional 10 bytes (b8-17) for task parameters; all zero for Colonize.
+/// Type-19 has an additional 10 bytes (b8-17) for task parameters.
+/// For task_type=1 (Transport) these are decoded into `transport_payload`.
+/// For task_type=2 (Colonize) all 10 bytes are zero.
+/// Other task types are not yet decoded.
 #[derive(Debug, Serialize)]
 struct WaypointRecord {
     /// Waypoint X coordinate (bytes 0-1 LE int16).
@@ -252,6 +292,10 @@ struct WaypointRecord {
     /// True if decoded from a type-19 TaskWaypointBlock (has task payload at b8-17).
     /// False if decoded from a type-20 WaypointBlock (plain goto / orbit).
     has_task_payload: bool,
+    /// Present when task_type=1 (Transport) and has_task_payload=true.
+    /// Decoded from type-19 b8-17 (5 × 2-byte resource operations).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    transport_payload: Option<TransportPayload>,
 }
 
 /// Complete turn state extracted from one .m1 file.
@@ -422,20 +466,47 @@ fn decode_type16(p: &[u8]) -> Option<FleetRecord> {
     })
 }
 
+/// Decode a single two-byte resource operation from the type-19 Transport payload.
+///
+/// Encoding (confirmed exp4):
+///   lo = amount & 0xFF
+///   hi = (action << 4) | ((amount >> 8) & 0xF)
+fn decode_resource_op(lo: u8, hi: u8) -> ResourceOp {
+    let amount = (lo as u16) | (((hi & 0x0F) as u16) << 8);
+    let action = (hi >> 4) & 0x0F;
+    ResourceOp { amount, action }
+}
+
 /// Decode a type-19 or type-20 waypoint payload.
 /// `has_task_payload` is true for type-19 (b8-17 hold task parameters).
 fn decode_waypoint(p: &[u8], has_task_payload: bool) -> Option<WaypointRecord> {
     if p.len() < 8 { return None; }
     let b6 = p[6];
     let b7 = p[7];
+    let task_type = b6 & 0xF;
+
+    // Decode Transport payload from b8-17 when present.
+    let transport_payload = if has_task_payload && task_type == 1 && p.len() >= 18 {
+        Some(TransportPayload {
+            ironium:   decode_resource_op(p[8],  p[9]),
+            boranium:  decode_resource_op(p[10], p[11]),
+            germanium: decode_resource_op(p[12], p[13]),
+            colonists: decode_resource_op(p[14], p[15]),
+            fuel:      decode_resource_op(p[16], p[17]),
+        })
+    } else {
+        None
+    };
+
     Some(WaypointRecord {
         x:                   i16::from_le_bytes([p[0], p[1]]),
         y:                   i16::from_le_bytes([p[2], p[3]]),
         planet_index:        i16::from_le_bytes([p[4], p[5]]),
         warp_speed:          b6 >> 4,
-        task_type:           b6 & 0xF,
+        task_type,
         is_current_position: (b7 & 0x04) != 0,
         has_task_payload,
+        transport_payload,
     })
 }
 
