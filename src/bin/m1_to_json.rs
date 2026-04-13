@@ -64,7 +64,7 @@
 use std::{env, path::Path, process};
 
 use serde::Serialize;
-use stars_file_parser::records::parse_file;
+use stars_file_parser::{race::{race_from_payload, Race}, records::parse_file};
 
 // ── Output types ─────────────────────────────────────────────────────────────
 
@@ -159,6 +159,14 @@ struct PlayerState {
     tech_electronics: Option<u8>,
     /// Biology tech level — type-6 byte 31 (confirmed: IT=0, JOAT=3).
     tech_biology: Option<u8>,
+
+    /// Race design parameters from type-6 bytes 16-81.
+    ///
+    /// Bytes 16-81 have IDENTICAL layout in both .r1 and .m type-6 payloads
+    /// (confirmed 2026-04-13, R0.9).  name/plural_name/icon_index are left
+    /// empty/zero because their encoding differs from .r1 files.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    race: Option<Race>,
 
     /// One entry per type-30 BattlePlanBlock record.
     battle_plans: Vec<BattlePlanRecord>,
@@ -344,13 +352,14 @@ fn read_uint_le(p: &[u8], off: usize, width: usize) -> Option<u32> {
 ///
 /// Confirmed layout (from Structure6.xml + oracle experiments):
 ///   b8-9  : Homeworld planet index (LE uint16)
+///   b16-81: Race design fields — IDENTICAL to .r1 layout (confirmed 2026-04-13, R0.9)
 ///   b26   : EnergyLevel       (IT=0, JOAT=3)
 ///   b27   : WeaponsLevel      (IT=0, JOAT=3)
 ///   b28   : PropulsionLevel   (IT=5, JOAT=3)
 ///   b29   : ConstructionLevel (IT=5, JOAT=3)
 ///   b30   : ElectronicsLevel  (IT=0, JOAT=3)
 ///   b31   : BiologyLevel      (IT=0, JOAT=3)
-fn decode_type6(p: &[u8]) -> (Option<u16>, [Option<u8>; 6]) {
+fn decode_type6(p: &[u8]) -> (Option<u16>, [Option<u8>; 6], Option<Race>) {
     let hw_idx = read_u16_le(p, 8);
     let techs = [
         if p.len() > 26 { Some(p[26]) } else { None }, // energy
@@ -360,7 +369,8 @@ fn decode_type6(p: &[u8]) -> (Option<u16>, [Option<u8>; 6]) {
         if p.len() > 30 { Some(p[30]) } else { None }, // electronics
         if p.len() > 31 { Some(p[31]) } else { None }, // biology
     ];
-    (hw_idx, techs)
+    let race = race_from_payload(p).ok();
+    (hw_idx, techs, race)
 }
 
 fn decode_type13(p: &[u8]) -> Option<PlanetRecord> {
@@ -544,6 +554,7 @@ fn main() {
     let mut year: u32 = 2400;
     let mut homeworld_planet_idx: Option<u16> = None;
     let mut techs: [Option<u8>; 6] = [None; 6];
+    let mut race: Option<Race> = None;
     let mut battle_plans: Vec<BattlePlanRecord> = Vec::new();
     let mut planets: Vec<PlanetRecord> = Vec::new();
     let mut fleets: Vec<FleetRecord> = Vec::new();
@@ -559,9 +570,10 @@ fn main() {
             }
             6 => {
                 if homeworld_planet_idx.is_none() {
-                    let (hw_idx, t) = decode_type6(&rec.payload);
+                    let (hw_idx, t, r) = decode_type6(&rec.payload);
                     homeworld_planet_idx = hw_idx;
                     techs = t;
+                    race  = r;
                 }
             }
             13 => {
@@ -603,6 +615,7 @@ fn main() {
             tech_construction: techs[3],
             tech_electronics:  techs[4],
             tech_biology:      techs[5],
+            race,
             battle_plans,
         },
         planets,
