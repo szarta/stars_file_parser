@@ -168,6 +168,9 @@ pub struct ResearchCosts {
     pub construction: TechCost,
     pub electronics: TechCost,
     pub biotechnology: TechCost,
+    /// byte 81 bit 5: 'All "Costs 75% extra" research fields start at Tech 3'.
+    /// Confirmed 2026-04-14 via viewai inspection.
+    pub expensive_tech_start_at_3: bool,
 }
 
 // ── Race ──────────────────────────────────────────────────────────────────────
@@ -306,6 +309,7 @@ pub fn race_from_payload(p: &[u8]) -> Result<Race, String> {
             construction:  tech(p[73])?,
             electronics:   tech(p[74])?,
             biotechnology: tech(p[75])?,
+            expensive_tech_start_at_3: (p[81] & 0x20) != 0,
         },
     })
 }
