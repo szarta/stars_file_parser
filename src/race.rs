@@ -76,21 +76,42 @@ pub enum Lrt {
 
 // ── Research cost ─────────────────────────────────────────────────────────────
 
-/// .r1 byte value at offsets 70-75: 0=Expensive, 1=Normal, 2=Cheap.
+/// Research cost multiplier for one tech area.
+///
+/// Byte values at payload offsets 70-75 (E/W/P/C/El/Bio):
+///   0 → 75% extra cost  ("Expensive" in AIs.md, "75% extra" in Stars! UI)
+///   1 → Normal/standard cost
+///   2 → 50% extra cost  ("Cheap" in AIs.md, "50% extra" in Stars! UI)
+///
+/// The AIs.md community doc (Wumpus 2005/2007) labels byte-2 as "Cheap" and
+/// byte-0 as "Expensive" — both are penalties above Normal.  "Cheap" in that
+/// context means "the cheaper of the two expensive options" (50% vs 75%).
+/// Confirmed 2026-04-14 via viewai inspection of AI .m files.
+///
+/// A genuine Cheap tier (research costs less than Normal) likely exists for
+/// human-designed races but has not been observed in AI template data; its
+/// byte value is unconfirmed (possibly 3).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
 pub enum TechCost {
-    Expensive,
+    /// 75% extra research cost per level (byte value 0).
+    /// Labeled "Expensive" in AIs.md community docs.
+    #[serde(rename = "expensive_75")]
+    Expensive75,
+    /// Standard research cost (byte value 1).
+    #[serde(rename = "normal")]
     Normal,
-    Cheap,
+    /// 50% extra research cost per level (byte value 2).
+    /// Labeled "Cheap" in AIs.md community docs (cheaper of two expensive tiers).
+    #[serde(rename = "expensive_50")]
+    Expensive50,
 }
 
 impl TechCost {
     pub fn from_byte(b: u8) -> Option<Self> {
         match b {
-            0 => Some(Self::Expensive),
+            0 => Some(Self::Expensive75),
             1 => Some(Self::Normal),
-            2 => Some(Self::Cheap),
+            2 => Some(Self::Expensive50),
             _ => None,
         }
     }
