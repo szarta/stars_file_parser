@@ -74,6 +74,44 @@ pub enum Lrt {
     MA,   // Mineral Alchemy                — file bit 6
 }
 
+// ── Leftover spend ────────────────────────────────────────────────────────────
+
+/// How the race designer spent leftover advantage points.
+///
+/// Stored at payload byte 69.  Confirmed 2026-04-15 by creating one race per
+/// option in Stars! and reading the byte.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum LeftoverSpend {
+    #[serde(rename = "surface_minerals")]      SurfaceMinerals,
+    #[serde(rename = "mineral_concentrations")] MineralConcentrations,
+    #[serde(rename = "mines")]                 Mines,
+    #[serde(rename = "factories")]             Factories,
+    #[serde(rename = "defenses")]              Defenses,
+}
+
+impl LeftoverSpend {
+    pub fn from_byte(b: u8) -> Option<Self> {
+        match b {
+            0 => Some(Self::SurfaceMinerals),
+            1 => Some(Self::MineralConcentrations),
+            2 => Some(Self::Mines),
+            3 => Some(Self::Factories),
+            4 => Some(Self::Defenses),
+            _ => None,
+        }
+    }
+
+    pub fn to_byte(&self) -> u8 {
+        match self {
+            Self::SurfaceMinerals      => 0,
+            Self::MineralConcentrations => 1,
+            Self::Mines                => 2,
+            Self::Factories            => 3,
+            Self::Defenses             => 4,
+        }
+    }
+}
+
 // ── Research cost ─────────────────────────────────────────────────────────────
 
 /// Research cost multiplier for one tech area.
@@ -185,6 +223,7 @@ pub struct Race {
     pub hab: HabPreferences,
     pub economy: Economy,
     pub research_costs: ResearchCosts,
+    pub leftover_spend: LeftoverSpend,
     pub icon_index: u32,
 }
 
@@ -311,5 +350,7 @@ pub fn race_from_payload(p: &[u8]) -> Result<Race, String> {
             biotechnology: tech(p[75])?,
             expensive_tech_start_at_3: (p[81] & 0x20) != 0,
         },
+        leftover_spend: LeftoverSpend::from_byte(p[69])
+            .ok_or_else(|| format!("unknown leftover_spend byte {}", p[69]))?,
     })
 }
