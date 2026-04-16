@@ -7,8 +7,10 @@ Import utilities for Stars! binary game files.
 | Binary | Input | Description |
 |--------|-------|-------------|
 | `r1_to_json` | `.r1` race file | Converts a Stars! race file to `race.json` |
+| `json_to_r1` | `race.json` | Writes a Stars!-loadable `.r1` from a race JSON |
 | `m1_to_json` | `.m1` turn file | Extracts player turn state from a Stars! player file |
 | `xy_to_json` | `.xy` universe file | Decodes universe parameters from a Stars! map file |
+| `json_to_def` | `gamedef.json` | Writes a `.def` file for `stars.exe -a` universe creation |
 
 ## Build
 
@@ -192,6 +194,107 @@ xy_to_json <file.xy>
   distinguished from the map file alone.
 - **`intended_player_count`** may exceed the number of `.m` files actually generated:
   harder/expert games drop players whose homeworlds cannot be placed at minimum spacing.
+
+## json_to_def
+
+Reads a game definition JSON and writes a Stars! `.def` file for use with
+`stars.exe -a`.
+
+```sh
+json_to_def <input.json | -> <output.def | ->
+```
+
+Use `-` for stdin/stdout.  The output is a Windows CRLF text file.  Stars!
+silently ignores `.def` files with LF-only endings and creates no output.
+
+### Workflow
+
+```bash
+# 1. Create a race JSON with r1_to_json (or write one by hand)
+r1_to_json myrace.r1 > myrace.json
+
+# 2. Write a game definition JSON (see schema below)
+# 3. Generate the .def
+json_to_def game.json game.def
+
+# 4. Create the universe (requires Xvfb if no display)
+Xvfb :99 -screen 0 1024x768x24 &
+DISPLAY=:99 WINEPREFIX=~/.wine32 WINEARCH=win32 \
+  wine /path/to/stars.exe -a game.def
+
+# 5. Generate turn 1
+DISPLAY=:99 WINEPREFIX=~/.wine32 WINEARCH=win32 \
+  wine /path/to/stars.exe -g1 GameName.hst
+
+# 6. Parse the result
+m1_to_json GameName.m1
+```
+
+### Input JSON schema
+
+```json
+{
+  "game_name": "TestGame",
+  "universe": {
+    "map_size": "small",
+    "density": "normal",
+    "player_positions": "farther",
+    "seed": 12345
+  },
+  "options": {
+    "max_minerals": false,
+    "slow_tech": false,
+    "bbs_play": false,
+    "galaxy_clumping": false,
+    "computer_alliances": false,
+    "no_random_events": false,
+    "public_scores": false
+  },
+  "players": [
+    { "human": { "race_file": "Z:\\path\\to\\race.r1" } },
+    { "ai":    { "difficulty": 2, "param": 1 } }
+  ],
+  "victory": {
+    "planets":         { "enabled": true,  "percent":  60  },
+    "tech":            { "enabled": true,  "level":    26, "fields": 4 },
+    "score":           { "enabled": false, "score":    5000 },
+    "exceeds_nearest": { "enabled": false, "percent":  150 },
+    "production":      { "enabled": false, "capacity": 100 },
+    "capital_ships":   { "enabled": false, "number":   100 },
+    "turns":           { "enabled": false, "years":    100 },
+    "must_meet": 1,
+    "min_years": 50
+  },
+  "output_xy": "Z:\\path\\to\\output.xy"
+}
+```
+
+**`universe` fields:**
+
+| Field | Values |
+|-------|--------|
+| `map_size` | `tiny` / `small` / `medium` / `large` / `huge` |
+| `density` | `sparse` / `normal` / `dense` / `packed` |
+| `player_positions` | `close` / `moderate` / `farther` / `distant` |
+| `seed` | Any 32-bit integer; determines the universe layout reproducibly |
+
+**`players`:** each element is either `{ "human": { "race_file": "..." } }` or
+`{ "ai": { "difficulty": N, "param": 1 } }` where `difficulty` is
+0=easy / 1=standard / 2=harder / 3=expert.  The `param` field is always `1`
+in all observed oracle files; its purpose is not yet confirmed.
+
+**Victory condition fields:** each VC has `enabled` plus the condition-specific
+value.  `must_meet` is how many simultaneously-satisfied conditions trigger a
+win; `min_years` is the minimum game length in years before any win can occur.
+
+### Known limitations
+
+- **`player_positions` integer mapping**: Close=0, Moderate=1, Farther=2,
+  Distant=3 is inferred from the Stars! UI order; only `farther` (2) has been
+  oracle-tested.
+- **AI `param` field**: always written as `1`; actual effect is unknown.
+- **Output file location**: `.hst` and `.mN` files are always written to the
+  CWD where `stars.exe` runs, regardless of the `output_xy` path.
 
 ## File format background
 

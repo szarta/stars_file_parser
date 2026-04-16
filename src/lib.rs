@@ -8,3 +8,4 @@ pub mod cipher;
 pub mod records;
 pub mod race;
 pub mod universe;
+pub mod gamedef;
