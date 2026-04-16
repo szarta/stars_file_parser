@@ -146,6 +146,10 @@ struct PlayerState {
     /// Homeworld planet index (type-6 bytes 8-9 LE uint16, confirmed: IT=73, JOAT=52).
     homeworld_planet_idx: Option<u16>,
 
+    /// Number of planets owned by this player (type-6 bytes 2-3 LE uint16).
+    /// Used to verify multi-planet PRTs (e.g. PP) from oracle tests (R2.1, R2.3).
+    planet_count: Option<u16>,
+
     // ── Tech levels from type-6 bytes 26-31 (confirmed against oracle experiments) ──
     /// Energy tech level — type-6 byte 26 (confirmed: IT=0, JOAT=3).
     tech_energy: Option<u8>,
@@ -359,8 +363,9 @@ fn read_uint_le(p: &[u8], off: usize, width: usize) -> Option<u32> {
 ///   b29   : ConstructionLevel (IT=5, JOAT=3)
 ///   b30   : ElectronicsLevel  (IT=0, JOAT=3)
 ///   b31   : BiologyLevel      (IT=0, JOAT=3)
-fn decode_type6(p: &[u8]) -> (Option<u16>, [Option<u8>; 6], Option<Race>) {
-    let hw_idx = read_u16_le(p, 8);
+fn decode_type6(p: &[u8]) -> (Option<u16>, Option<u16>, [Option<u8>; 6], Option<Race>) {
+    let hw_idx      = read_u16_le(p, 8);
+    let planet_count = read_u16_le(p, 2);
     let techs = [
         if p.len() > 26 { Some(p[26]) } else { None }, // energy
         if p.len() > 27 { Some(p[27]) } else { None }, // weapons
@@ -370,7 +375,7 @@ fn decode_type6(p: &[u8]) -> (Option<u16>, [Option<u8>; 6], Option<Race>) {
         if p.len() > 31 { Some(p[31]) } else { None }, // biology
     ];
     let race = race_from_payload(p).ok();
-    (hw_idx, techs, race)
+    (hw_idx, planet_count, techs, race)
 }
 
 fn decode_type13(p: &[u8]) -> Option<PlanetRecord> {
@@ -553,6 +558,7 @@ fn main() {
 
     let mut year: u32 = 2400;
     let mut homeworld_planet_idx: Option<u16> = None;
+    let mut planet_count: Option<u16> = None;
     let mut techs: [Option<u8>; 6] = [None; 6];
     let mut race: Option<Race> = None;
     let mut battle_plans: Vec<BattlePlanRecord> = Vec::new();
@@ -570,8 +576,9 @@ fn main() {
             }
             6 => {
                 if homeworld_planet_idx.is_none() {
-                    let (hw_idx, t, r) = decode_type6(&rec.payload);
+                    let (hw_idx, pc, t, r) = decode_type6(&rec.payload);
                     homeworld_planet_idx = hw_idx;
+                    planet_count         = pc;
                     techs = t;
                     race  = r;
                 }
@@ -609,6 +616,7 @@ fn main() {
         year,
         player: PlayerState {
             homeworld_planet_idx,
+            planet_count,
             tech_energy:       techs[0],
             tech_weapons:      techs[1],
             tech_propulsion:   techs[2],

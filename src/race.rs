@@ -117,39 +117,31 @@ impl LeftoverSpend {
 /// Research cost multiplier for one tech area.
 ///
 /// Byte values at payload offsets 70-75 (E/W/P/C/El/Bio):
-///   0 → 75% extra cost  ("Expensive" in AIs.md, "75% extra" in Stars! UI)
-///   1 → Normal/standard cost
-///   2 → 50% extra cost  ("Cheap" in AIs.md, "50% extra" in Stars! UI)
+///   0 → 175% of base cost ("Expensive" in Stars! UI / AIs.md)
+///   1 → 100% of base cost (Normal/standard)
+///   2 →  50% of base cost ("Cheap" in Stars! UI / AIs.md)
 ///
-/// The AIs.md community doc (Wumpus 2005/2007) labels byte-2 as "Cheap" and
-/// byte-0 as "Expensive" — both are penalties above Normal.  "Cheap" in that
-/// context means "the cheaper of the two expensive options" (50% vs 75%).
 /// Confirmed 2026-04-14 via viewai inspection of AI .m files.
-///
-/// A genuine Cheap tier (research costs less than Normal) likely exists for
-/// human-designed races but has not been observed in AI template data; its
-/// byte value is unconfirmed (possibly 3).
+/// See also race_design.rst: "Cheap: 50% of base cost, Normal: 100%, Expensive: 175%".
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TechCost {
-    /// 75% extra research cost per level (byte value 0).
-    /// Labeled "Expensive" in AIs.md community docs.
-    #[serde(rename = "expensive_75")]
-    Expensive75,
-    /// Standard research cost (byte value 1).
+    /// 175% of base research cost per level (byte value 0).
+    #[serde(rename = "expensive")]
+    Expensive,
+    /// 100% of base research cost per level — standard cost (byte value 1).
     #[serde(rename = "normal")]
     Normal,
-    /// 50% extra research cost per level (byte value 2).
-    /// Labeled "Cheap" in AIs.md community docs (cheaper of two expensive tiers).
-    #[serde(rename = "expensive_50")]
-    Expensive50,
+    /// 50% of base research cost per level — half price (byte value 2).
+    #[serde(rename = "cheap")]
+    Cheap,
 }
 
 impl TechCost {
     pub fn from_byte(b: u8) -> Option<Self> {
         match b {
-            0 => Some(Self::Expensive75),
+            0 => Some(Self::Expensive),
             1 => Some(Self::Normal),
-            2 => Some(Self::Expensive50),
+            2 => Some(Self::Cheap),
             _ => None,
         }
     }

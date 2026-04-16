@@ -132,9 +132,9 @@ fn encode_prt(prt: &Prt) -> u8 {
 // ── TechCost encoder ──────────────────────────────────────────────────────────
 fn encode_tech_cost(tc: &TechCost) -> u8 {
     match tc {
-        TechCost::Expensive75 => 0,
-        TechCost::Normal      => 1,
-        TechCost::Expensive50 => 2,
+        TechCost::Expensive => 0,
+        TechCost::Normal    => 1,
+        TechCost::Cheap     => 2,
     }
 }
 
