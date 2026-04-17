@@ -50,11 +50,10 @@
 //
 // Known limitations / TODOs
 // -------------------------------------------------------------------------
-// - Planet record (type-13): uses simplified fixed-offset decoding that only
-//   works for non-depleted, non-terraformed planets. Full variable-length
-//   parsing (DepletionLength + SurfaceLength bytes) not yet implemented.
-//   Surface minerals at b14-19 and population at b20+ confirmed for standard
-//   (non-depleted) case per Structure13.xml.
+// - Planet record (type-13): DepletionLength (b4) is now handled — the 2-bit
+//   per-mineral widths shift concentrations and all downstream offsets correctly
+//   (confirmed 2026-04-17 against T1→T2 oracle: pop/mines/factories/defenses all ✓).
+//   Terraformed planets (PlanetInfo bit 10 set) are not yet tested.
 // - FleetBlock (type-16): fleet name encoding unknown; b15 high bit and
 //   fuel encoding may change when cargo is present.  b16 semantics unclear
 //   (correlates with fuel>255 / 23-byte records; NOT ship count).  Ship count
@@ -231,28 +230,32 @@ struct PlanetRecord {
 
 /// One fleet record (type-16 FleetBlock).
 ///
-/// Confirmed field layout (from oracle experiments exp2.2, exp3, R2.3):
+/// Confirmed field layout (from oracle experiments exp2.2, exp3, R2.3, ai-game 2026-04-17):
 ///   b0-1  : fleet index (LE uint16)
+///   b2-3  : player_idx (LE uint16, 0-based) — confirmed from 16-player ai-game corpus
+///   b4    : unknown constant (0x07 in all observed games)
+///   b5    : flags byte; base 0x09 (bits 0+3 set); bit 5 (0x20) meaning unknown
 ///   b6-7  : current orbit planet index (LE uint16); 65535 = en route (deep space)
 ///   b8-9  : fleet X coordinate (LE int16)
 ///   b10-11: fleet Y coordinate (LE int16) — confirmed: Sulfur Y=1220, Godel Y=1331
 ///   b12-13: design bitmask (bit i set → design slot i present in fleet)
-///   b14-15: number of stacks (b14 = actual count; b15 high bit may indicate cargo)
-///   b16   : unknown flags; correlates with fuel > 255 (value=1 when fuel≤255, 2 when
-///           fuel>255); previously misidentified as ship count — NOT the ship count
-///   b17-18: fuel on board in mg (LE uint16); confirmed 2026-04-17 from in-game
-///           Report→Fleets data (fuel=300 → b17-18=0x012C=300, fuel=50 → 0x0032=50);
-///           previously misidentified as total fleet mass in kT
+///   b14   : stack count (number of distinct design stacks)
+///   b15   : cargo flags byte; 0x00=no cargo; bit 6 (0x40)=colonists on board
+///   b16   : record-format flag; 1=small-fuel (≤255 mg), 2=large-fuel (>255 mg)
 ///
-///   Trailing bytes (confirmed from exp2.2 vs exp3 differential):
-///     22-byte records: b19-20=0, b21=waypoint_count   (fuel ≤ 255, b16=1)
-///     23-byte records: b19-20=0, b21=battle_plan_idx, b22=waypoint_count  (fuel > 255, b16=2)
+///   NO-CARGO (b15=0x00):
+///     b16=1 (22-byte): b17-18=fuel_mg LE uint16, b19-20=0, b21=waypoint_count
+///     b16=2 (23-byte): b17-18=fuel_mg LE uint16, b19-20=0, b21=battle_plan_idx, b22=waypoints
 ///
-/// Ship count is NOT encoded here for starting-game fleets; all single-design
-/// fleets in oracle games start with exactly 1 ship per fleet entry.
+///   CARGO (b15 bit 6 set, 23-byte):
+///     b16=1, b17=colonists_kt (units of 1000 colonists), b18=fuel_mg (1-byte),
+///     b19-20=0, b21=battle_plan_idx, b22=waypoint_count
+///     Confirmed: SS/CA colony ships ai-game/7 — 25kt colonists, 200mg fuel ✓
 #[derive(Debug, Serialize)]
 struct FleetRecord {
     fleet_index: u16,
+    /// Player index (0-based); b2-3 LE uint16. Confirmed from 16-player ai-game corpus.
+    player_idx: u16,
     /// Planet currently orbited (LE uint16); 65535 = en route / deep space.
     orbit_planet_idx: u16,
     /// True when orbit_planet_idx == 65535 (fleet is moving between planets).
@@ -261,17 +264,20 @@ struct FleetRecord {
     y: i16,
     /// Bitmask of design slots used (bit 0 = slot 0, bit 1 = slot 1, …).
     design_bitmask: u16,
-    /// Number of distinct design stacks in this fleet.
-    num_stacks: u16,
-    /// Raw b16 byte; correlates with fuel > 255 but semantics unclear.
-    /// Value=1 when fuel≤255 (22-byte record), value=2 when fuel>255 (23-byte record).
-    /// Previously misidentified as ship count — do not use as ship count.
-    b16_raw: u8,
-    /// Fuel on board in mg (LE uint16; b17-18).
-    /// Confirmed from in-game Report→Fleets panel (2026-04-17, R2.3).
-    /// Previously misidentified as total fleet mass in kT.
+    /// Number of distinct design stacks in this fleet (b14).
+    num_stacks: u8,
+    /// Cargo flags (b15): 0x00=none; bit 6 (0x40)=colonists on board.
+    cargo_flags: u8,
+    /// Record-format flag (b16): 1=fuel fits in 1 byte, 2=fuel needs 2 bytes.
+    fmt_flag: u8,
+    /// Fuel on board in mg. For no-cargo records: LE uint16 at b17-18.
+    /// For cargo records (b15 bit 6): 1-byte value at b18.
     fuel_mg: u16,
-    /// 0-based index into player's battle plan list (present only in 23-byte records).
+    /// Colonists on board in units of 1000 (kT). Only present when b15 bit 6 set.
+    /// Confirmed: b17=25 → 25,000 colonists (ai-game/7/Game.m7 ✓).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    colonists_kt: Option<u8>,
+    /// 0-based index into player's battle plan list (present in 23-byte records).
     /// 0=Default, 1=Kill Starbase, 2=Max-Defense, 3=Sniper, 4=Chicken, 5+=custom.
     battle_plan_idx: Option<u8>,
     /// Number of waypoints for this fleet (including current-position waypoint when en route).
@@ -398,18 +404,32 @@ fn decode_type13(p: &[u8]) -> Option<PlanetRecord> {
     let raw_word = u16::from_le_bytes([p[0], p[1]]);
     let planet_index = raw_word & 0x7FF;   // low 11 bits
     let owner_id = ((raw_word >> 11) & 0x1F) as u8;  // high 5 bits; 31=nobody
-    let colonized = p.len() > 11;
+
+    // b4 = DepletionLength: three 2-bit fields encoding the byte-width of each mineral's
+    // depletion accumulator.  These bytes are inserted immediately after b4, before the
+    // concentration bytes.  Confirmed 2026-04-17 via T1→T2 diff: T2 has depl=0x15 (1 byte
+    // per mineral), shifting concentrations from b5→b8 and all downstream offsets by 3.
+    let depl = if p.len() > 4 { p[4] } else { 0 };
+    let iron_dw  = ((depl >> 0) & 3) as usize;
+    let boran_dw = ((depl >> 2) & 3) as usize;
+    let germ_dw  = ((depl >> 4) & 3) as usize;
+    let depl_total = iron_dw + boran_dw + germ_dw;
+
+    // Concentrations start at b5 + depl_total.
+    let cb = 5 + depl_total;
+    // Colonized records are longer than the uninhabited length (11 + depl_total bytes).
+    let colonized = p.len() > 11 + depl_total;
 
     let base = PlanetRecord {
         planet_index,
         owner_id,
         colonized,
-        conc_ironium:      if p.len() > 5  { Some(p[5])  } else { None },
-        conc_boranium:     if p.len() > 6  { Some(p[6])  } else { None },
-        conc_germanium:    if p.len() > 7  { Some(p[7])  } else { None },
-        gravity:           if p.len() > 8  { Some(p[8])  } else { None },
-        temperature:       if p.len() > 9  { Some(p[9])  } else { None },
-        radiation:         if p.len() > 10 { Some(p[10]) } else { None },
+        conc_ironium:   if p.len() > cb     { Some(p[cb])     } else { None },
+        conc_boranium:  if p.len() > cb + 1 { Some(p[cb + 1]) } else { None },
+        conc_germanium: if p.len() > cb + 2 { Some(p[cb + 2]) } else { None },
+        gravity:        if p.len() > cb + 3 { Some(p[cb + 3]) } else { None },
+        temperature:    if p.len() > cb + 4 { Some(p[cb + 4]) } else { None },
+        radiation:      if p.len() > cb + 5 { Some(p[cb + 5]) } else { None },
         surface_ironium:  None,
         surface_boranium: None,
         surface_germanium: None,
@@ -418,21 +438,21 @@ fn decode_type13(p: &[u8]) -> Option<PlanetRecord> {
         factories:        None,
         defenses:         None,
     };
-    if !colonized || p.len() < 14 {
+    // SurfaceLength byte sits at b13 + depl_total; data follows at b14 + depl_total.
+    let surf_len_off = 13 + depl_total;
+    if !colonized || p.len() <= surf_len_off {
         return Some(base);
     }
 
-    // Variable-length colonised decode.
-    // Assumes b4 = DepletionLength = 0 (non-depleted) and Terraformed flag = 0.
-    // SurfaceLength byte b13 encodes four 2-bit widths (LSB-first):
+    // SurfaceLength byte encodes four 2-bit widths (LSB-first):
     //   bits 0-1 = IroniumWidth, 2-3 = BoraniumWidth, 4-5 = GermaniumWidth, 6-7 = PopWidth
-    let surf_len = p[13];
+    let surf_len = p[surf_len_off];
     let iron_w  = ((surf_len >> 0) & 3) as usize;
     let boran_w = ((surf_len >> 2) & 3) as usize;
     let germ_w  = ((surf_len >> 4) & 3) as usize;
     let pop_w   = ((surf_len >> 6) & 3) as usize;
 
-    let mut off = 14usize;
+    let mut off = 14 + depl_total;
     let surface_ironium   = read_uint_le(p, off, iron_w);  off += iron_w;
     let surface_boranium  = read_uint_le(p, off, boran_w); off += boran_w;
     let surface_germanium = read_uint_le(p, off, germ_w);  off += germ_w;
@@ -469,26 +489,47 @@ fn decode_type13(p: &[u8]) -> Option<PlanetRecord> {
 
 fn decode_type16(p: &[u8]) -> Option<FleetRecord> {
     if p.len() < 19 { return None; }
-    let orbit = u16::from_le_bytes([p[6], p[7]]);
-    // Trailing bytes encode battle plan and waypoint count.
-    // 22-byte record: b19-20=0, b21=waypoint_count
-    // 23-byte record: b19-20=0, b21=battle_plan_idx, b22=waypoint_count
-    let (battle_plan_idx, waypoint_count) = match p.len() {
-        22 => (None,         if p.len() > 21 { p[21] } else { 0 }),
-        23 => (if p.len() > 21 { Some(p[21]) } else { None },
-               if p.len() > 22 { p[22] } else { 0 }),
-        _  => (None, 0),
+    let orbit       = u16::from_le_bytes([p[6], p[7]]);
+    let cargo_flags = p[15];
+    let fmt_flag    = p[16];
+    let has_cargo   = (cargo_flags & 0x40) != 0;
+
+    // Cargo records (b15 bit 6 set): always 23-byte; b17=colonists_kt, b18=fuel_mg (1 byte).
+    // No-cargo records: b16=1 → 22-byte (fuel LE uint16 at b17-18, waypoints at b21);
+    //                   b16=2 → 23-byte (fuel LE uint16 at b17-18, battle_plan at b21, wps at b22).
+    let (fuel_mg, colonists_kt, battle_plan_idx, waypoint_count) = if has_cargo {
+        let colonists = if p.len() > 17 { Some(p[17]) } else { None };
+        let fuel      = if p.len() > 18 { p[18] as u16 } else { 0 };
+        let bp        = if p.len() > 21 { Some(p[21]) } else { None };
+        let wps       = if p.len() > 22 { p[22] } else { 0 };
+        (fuel, colonists, bp, wps)
+    } else {
+        let fuel = u16::from_le_bytes([
+            if p.len() > 17 { p[17] } else { 0 },
+            if p.len() > 18 { p[18] } else { 0 },
+        ]);
+        let (bp, wps) = match (fmt_flag, p.len()) {
+            (1, 22) | (_, 22) => (None,         if p.len() > 21 { p[21] } else { 0 }),
+            (2, 23) | (_, 23) => (if p.len() > 21 { Some(p[21]) } else { None },
+                                  if p.len() > 22 { p[22] } else { 0 }),
+            _ => (None, 0),
+        };
+        (fuel, None, bp, wps)
     };
+
     Some(FleetRecord {
-        fleet_index:     u16::from_le_bytes([p[0], p[1]]),
+        fleet_index:      u16::from_le_bytes([p[0], p[1]]),
+        player_idx:       u16::from_le_bytes([p[2], p[3]]),
         orbit_planet_idx: orbit,
-        en_route:        orbit == 65535,
-        x:               i16::from_le_bytes([p[8], p[9]]),
-        y:               i16::from_le_bytes([p[10], p[11]]),
-        design_bitmask:  u16::from_le_bytes([p[12], p[13]]),
-        num_stacks:      u16::from_le_bytes([p[14], p[15]]),
-        b16_raw:         p[16],
-        fuel_mg:         u16::from_le_bytes([p[17], p[18]]),
+        en_route:         orbit == 65535,
+        x:                i16::from_le_bytes([p[8],  p[9]]),
+        y:                i16::from_le_bytes([p[10], p[11]]),
+        design_bitmask:   u16::from_le_bytes([p[12], p[13]]),
+        num_stacks:       p[14],
+        cargo_flags,
+        fmt_flag,
+        fuel_mg,
+        colonists_kt,
         battle_plan_idx,
         waypoint_count,
     })
