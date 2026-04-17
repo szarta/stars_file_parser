@@ -1,16 +1,22 @@
 # stars-file-parser
 
-Import utilities for Stars! binary game files.
+Import and inspection utilities for Stars! game files — binary player files,
+race files, and plain-text oracle dumps.
 
 ## Tools
 
 | Binary | Input | Description |
 |--------|-------|-------------|
-| `r1_to_json` | `.r1` race file | Converts a Stars! race file to `race.json` |
+| `r1_to_json` | `.r1` race file | Converts a Stars! race file to JSON |
 | `json_to_r1` | `race.json` | Writes a Stars!-loadable `.r1` from a race JSON |
-| `m1_to_json` | `.m1` turn file | Extracts player turn state from a Stars! player file |
+| `m1_to_json` | `.mN` turn file | Extracts full player turn state from a Stars! player file |
 | `xy_to_json` | `.xy` universe file | Decodes universe parameters from a Stars! map file |
 | `json_to_def` | `gamedef.json` | Writes a `.def` file for `stars.exe -a` universe creation |
+| `map_to_json` | `.map` universe dump | Parses a Stars! universe text dump to JSON |
+| `pla_to_json` | `.pla` / `.pNN` planet dump | Parses a Stars! planet text dump to JSON (basic or rich) |
+| `fle_to_json` | `.fle` / `.fNN` fleet dump | Parses a Stars! fleet text dump to JSON (basic or rich) |
+| `dump_records` | any Stars! binary | Debug: print record types and lengths |
+| `dump_type16` | `.mN` turn file | Debug: print raw type-16 FleetBlock payloads |
 
 ## Build
 
@@ -20,18 +26,137 @@ cargo build --release
 
 Binaries land in `target/release/`.
 
-## r1_to_json
+---
 
-Reads a Stars! `.r1` binary race file and writes an equivalent `race.json` to stdout.
+## Text dump tools
+
+Stars! can export human-readable text files via `stars.exe -d[pfm] <game>.mN`
+(no display or Xvfb required — the `-d` flag is fully headless).  These three
+tools parse those exports into JSON for oracle validation.
+
+Before generating dumps, set `NewReports=1` in the `[Misc]` section of
+`~/.wine32/drive_c/windows/Stars.ini` to get the richer `.pNN`/`.fNN` format.
+Use `create_stars_ini.py` in `stars-reborn-research/automation/` to do this
+idempotently, or run `dump_game_info.py` which calls it automatically.
+
+### map_to_json
+
+Parses a `.map` universe dump (produced by `stars.exe -dm`).  Lists every
+planet in the universe with its position.  The `number` field is the 1-based
+ordinal that matches planet ordering in the `.xy` file.
+
+```sh
+map_to_json <file.map>
+```
+
+```json
+{
+  "planets": [
+    { "number": 1, "x": 1014, "y": 1047, "name": "Halsey" },
+    { "number": 52, "x": 1310, "y": 1220, "name": "Sulfur" }
+  ]
+}
+```
+
+### pla_to_json
+
+Parses a planet dump — either the basic `.pla` (20 columns) or the richer
+`.pNN` (36 columns, `NewReports=1`).  Format is detected automatically from
+the header row.
+
+```sh
+pla_to_json <file.pla|file.pNN>
+```
+
+**Basic format** (`"format": "basic"`) — present in both:
+
+| Field | Description |
+|-------|-------------|
+| `planet_name` | Planet name |
+| `owner` | Race name of the owner |
+| `starbase_type` | `"Starbase"`, `"Orbital Fort"`, `"--"` = none |
+| `report_age` | Turns since last observation; 0 = current turn |
+| `population` | Colony population |
+| `value_pct` | Habitability value as signed integer percent; null if unparseable |
+| `production_queue` | Queue description string |
+| `mines` / `factories` | Installation counts |
+| `defense_pct` | Defense coverage as float (e.g. `9.56`) |
+| `surface_iron/bora/germ` | Surface minerals in kT |
+| `iron/bora/germ_mining_rate` | Mining rate per mineral |
+| `iron/bora/germ_mineral_conc` | Mineral concentration (0–100) |
+| `resources` | Resources generated per turn |
+
+**Rich-only fields** (`"format": "rich"`, omitted in basic output):
+
+| Field | Description |
+|-------|-------------|
+| `gravity` / `temperature` / `radiation` | Current hab as display string (e.g. `"1.00g"`, `"0°C"`, `"50mR"`) |
+| `gravity_orig` / `temperature_orig` / `radiation_orig` | Original pre-terraform hab |
+| `terraformed_pct` | 100 = not terraformed; lower = degree of terraforming |
+| `capacity` | Raw `Cap` field; semantics to be confirmed vs. oracle |
+| `scan_range` / `pen_scan_range` | Scanner ranges in ly |
+| `driver` / `warp` | Mass driver target and warp speed (empty/0 = no driver) |
+| `route` | Route destination (empty = no route) |
+| `gate_range` / `gate_mass` | Stargate limits in ly/kT (0 = no gate) |
+| `pct_damaged` | Percent of defenses damaged |
+
+**Note:** the temperature string contains `°C` (CP1252 byte `0xB0`); under
+`from_utf8_lossy` this appears as the Unicode replacement character `\u{FFFD}`.
+This only affects display strings; all numeric fields parse correctly.
+
+### fle_to_json
+
+Parses a fleet dump — either the basic `.fle` (12 columns) or the richer
+`.fNN` (29 columns, `NewReports=1`).  Format is detected automatically.
+
+```sh
+fle_to_json <file.fle|file.fNN>
+```
+
+**Basic format** (`"format": "basic"`) — present in both:
+
+| Field | Description |
+|-------|-------------|
+| `fleet_name` | Fleet name (e.g. `"Humanoid Armed Probe #1"`) |
+| `x` / `y` | Fleet coordinates |
+| `planet` | Current location name; `"--"` if in deep space |
+| `destination` | Next waypoint name; `"--"` if no orders |
+| `battle_plan` | Active battle plan name |
+| `ship_count` | Number of ships in the fleet |
+| `cargo_iron/bora/germ` | Cargo in kT |
+| `cargo_colonists` | Colonist cargo |
+| `fuel` | Fuel on board in mg |
+
+**Rich-only fields** (`"format": "rich"`, omitted in basic output):
+
+| Field | Description |
+|-------|-------------|
+| `owner` | Player number (1-based) |
+| `eta` | Turns to destination (0 = in orbit) |
+| `warp` | Warp speed to destination (0 = not moving) |
+| `mass_kt` | Total fleet mass in kT |
+| `cloak_pct` | Cloaking level 0–100 |
+| `scan_range` / `pen_scan_range` | Scanner ranges in ly |
+| `task` | Current waypoint task (e.g. `"(no task here)"`, `"Transport"`) |
+| `mining_rate` | Remote mining rate in kT/turn |
+| `sweep_rate` | Mine sweep rate |
+| `mine_laying_rate` | Mines laid per turn |
+| `terraform_rate` | Terraforming rate |
+| `ships_unarmed/scout/warship/utility/bomber` | Ship counts by combat role |
+
+---
+
+## Binary file tools
+
+### r1_to_json
+
+Reads a Stars! `.r1` binary race file and writes an equivalent race JSON to stdout.
 
 ```sh
 r1_to_json <file.r1>
 ```
 
-### Output format
-
-The output is a single JSON object conforming to the race schema defined in
-`stars-reborn-design/docs/new_game/race_file_format.rst`.
+#### Output format
 
 ```json
 {
@@ -68,7 +193,7 @@ The output is a single JSON object conforming to the race schema defined in
 }
 ```
 
-### Hab units
+#### Hab units
 
 | Axis | Unit | Notes |
 |------|------|-------|
@@ -76,18 +201,15 @@ The output is a single JSON object conforming to the race schema defined in
 | Temperature | °C | Linear: `(index − 50) × 4`; range −200 to +200 |
 | Radiation | mR/yr | Direct 0–100 integer |
 
-## m1_to_json
+### m1_to_json
 
-Reads a Stars! `.m1` player turn file and writes turn state JSON to stdout.
-Works on any `.mN` file (one per player); pass the file path directly.
+Reads a Stars! `.mN` player turn file and writes turn state JSON to stdout.
 
 ```sh
 m1_to_json <file.m1>
 ```
 
-### Output format
-
-The output is a single JSON object with the following top-level keys:
+#### Output format
 
 ```json
 {
@@ -95,7 +217,8 @@ The output is a single JSON object with the following top-level keys:
   "player": { ... },
   "planets": [ ... ],
   "fleets": [ ... ],
-  "waypoints": [ ... ]
+  "waypoints": [ ... ],
+  "designs": [ ... ]
 }
 ```
 
@@ -104,9 +227,14 @@ The output is a single JSON object with the following top-level keys:
 | Field | Description |
 |-------|-------------|
 | `homeworld_planet_idx` | 0-based planet index of the player's homeworld |
+| `planet_count` | Number of planets owned by this player |
 | `tech_energy` … `tech_biology` | Current tech levels in all six fields |
-| `race` | Race design parameters (same layout as `r1_to_json` output, minus name/icon) |
+| `race` | Race design parameters (same layout as `r1_to_json`, minus name/icon) |
 | `battle_plans` | List of battle plan records (type-30 BattlePlanBlock) |
+
+Each battle plan has `plan_id`, `tactic`, `primary_target`, `secondary_target`,
+and `attack_who`.  Target codes: 0=None, 1=Any, 2=Starbase, 3=Armed Ships,
+4=Bombers/Freighters, 5=Unarmed Ships, 6=Fuel Transports, 7=Freighters.
 
 **`planets`** — one entry per type-13 PlanetBlock visible to the player:
 
@@ -126,18 +254,17 @@ The output is a single JSON object with the following top-level keys:
 | Field | Description |
 |-------|-------------|
 | `fleet_index` | Fleet identifier |
-| `orbit_planet_idx` | Orbited planet (65535 = en route) |
+| `orbit_planet_idx` | Orbited planet index (65535 = en route) |
 | `en_route` | True when the fleet is between planets |
-| `x`, `y` | Coordinates in light-years |
+| `x`, `y` | Coordinates |
 | `design_bitmask` | Bitmask of design slots present in the fleet |
 | `num_stacks` | Number of distinct ship designs |
-| `ship_count` | Total ships |
-| `total_mass_kt` | Total fleet mass in kT |
-| `battle_plan_idx` | Active battle plan (0-based; omitted for simple fleets) |
+| `b16_raw` | Raw byte 16; correlates with fuel > 255 (1 when fuel ≤ 255, 2 when fuel > 255) |
+| `fuel_mg` | Fuel on board in mg (confirmed from in-game Report→Fleets, 2026-04-17) |
+| `battle_plan_idx` | Active battle plan index (omitted for fleets with fuel ≤ 255) |
 | `waypoint_count` | Number of waypoints including current position |
 
-**`waypoints`** — one entry per type-19/20 waypoint record, in file order
-(each fleet's waypoints follow its type-16 record):
+**`waypoints`** — one entry per type-19/20 waypoint record, in file order:
 
 | Field | Description |
 |-------|-------------|
@@ -152,16 +279,29 @@ The output is a single JSON object with the following top-level keys:
 Each `transport_payload` resource op has `amount` (kT) and `action`
 (0=No change, 1=Unload All, 2=Load All, 3=Load Exactly, 4=Unload Exactly, 5=Fill Up To).
 
-### Known limitations
+**`designs`** — one entry per type-26 DesignBlock (full-design records only):
+
+| Field | Description |
+|-------|-------------|
+| `design_number` | Design slot index |
+| `is_starbase` | True for orbital structures |
+| `hull_id` / `hull_name` | Hull type numeric ID and name |
+| `pic` | Picture index |
+| `armor` | Total armor value |
+| `slot_count` | Number of component slots |
+| `turn_designed` | Turn the design was created |
+| `total_built` / `total_remaining` | Lifetime production and surviving count |
+| `name` | Design name (decoded from Stars! nibble encoding) |
+| `slots` | List of component slots: `category`, `category_name`, `item_id`, `count`, `component` |
+
+#### Known limitations
 
 - **Planet records**: simplified decoding only works correctly for non-depleted,
-  non-terraformed planets. Variable-length DepletionLength/SurfaceLength parsing
-  is not fully implemented.
-- **Fleet name**: encoding not yet reverse-engineered; name is not emitted.
-- **Waypoint task payload**: only Transport (task_type=1) is decoded. Remote Mining,
-  Patrol, and other task types produce no `transport_payload`.
+  non-terraformed planets.
+- **Fleet name**: not decoded (encoding not yet confirmed).
+- **Waypoint task payload**: only Transport (task_type=1) is decoded.
 
-## xy_to_json
+### xy_to_json
 
 Reads a Stars! `.xy` universe file and writes universe parameters to stdout.
 
@@ -169,7 +309,7 @@ Reads a Stars! `.xy` universe file and writes universe parameters to stdout.
 xy_to_json <file.xy>
 ```
 
-### Output format
+#### Output format
 
 ```json
 {
@@ -184,41 +324,38 @@ xy_to_json <file.xy>
 | Field | Values |
 |-------|--------|
 | `map_size` | `tiny` / `small` / `medium` / `large` / `huge` |
-| `planet_count` | 32 / 128 / 288 / 512 / 800 for the five sizes |
-| `intended_player_count` | Total players the game was set up with (human + AI) |
+| `planet_count` | 32 / 128 / 288 / 512 / 800 |
+| `intended_player_count` | Total players the game was set up with |
 | `difficulty` | `easy\|standard` / `harder` / `expert` |
 
-### Known limitations
+#### Known limitations
 
-- **Easy vs Standard**: both produce an identical `.xy` signature and cannot be
-  distinguished from the map file alone.
-- **`intended_player_count`** may exceed the number of `.m` files actually generated:
-  harder/expert games drop players whose homeworlds cannot be placed at minimum spacing.
+- Easy and Standard produce an identical `.xy` signature and cannot be distinguished.
 
-## json_to_def
+### json_to_def
 
 Reads a game definition JSON and writes a Stars! `.def` file for use with
 `stars.exe -a`.
 
 ```sh
-json_to_def <input.json | -> <output.def | ->
+json_to_def <input.json> <output.def>
 ```
 
-Use `-` for stdin/stdout.  The output is a Windows CRLF text file.  Stars!
-silently ignores `.def` files with LF-only endings and creates no output.
+Use `-` for stdin/stdout.  The output uses Windows CRLF line endings — Stars!
+silently ignores `.def` files with LF-only endings.
 
-### Workflow
+#### Workflow
 
 ```bash
-# 1. Create a race JSON with r1_to_json (or write one by hand)
+# 1. Build a race JSON
 r1_to_json myrace.r1 > myrace.json
 
 # 2. Write a game definition JSON (see schema below)
+
 # 3. Generate the .def
 json_to_def game.json game.def
 
-# 4. Create the universe (requires Xvfb if no display)
-Xvfb :99 -screen 0 1024x768x24 &
+# 4. Create the universe (headless)
 DISPLAY=:99 WINEPREFIX=~/.wine32 WINEARCH=win32 \
   wine /path/to/stars.exe -a game.def
 
@@ -228,9 +365,16 @@ DISPLAY=:99 WINEPREFIX=~/.wine32 WINEARCH=win32 \
 
 # 6. Parse the result
 m1_to_json GameName.m1
+
+# 7. Dump oracle text files (no display needed)
+WINEPREFIX=~/.wine32 WINEARCH=win32 DISPLAY=:0 \
+  wine /path/to/stars.exe -dfmp GameName.m1
+map_to_json GameName.map
+pla_to_json GameName.p1
+fle_to_json GameName.f1
 ```
 
-### Input JSON schema
+#### Input JSON schema
 
 ```json
 {
@@ -276,36 +420,31 @@ m1_to_json GameName.m1
 | `map_size` | `tiny` / `small` / `medium` / `large` / `huge` |
 | `density` | `sparse` / `normal` / `dense` / `packed` |
 | `player_positions` | `close` / `moderate` / `farther` / `distant` |
-| `seed` | Any 32-bit integer; determines the universe layout reproducibly |
+| `seed` | Any 32-bit integer |
 
-**`players`:** each element is either `{ "human": { "race_file": "..." } }` or
+**`players`:** each element is `{ "human": { "race_file": "..." } }` or
 `{ "ai": { "difficulty": N, "param": 1 } }` where `difficulty` is
-0=easy / 1=standard / 2=harder / 3=expert.  The `param` field is always `1`
-in all observed oracle files; its purpose is not yet confirmed.
+0=easy / 1=standard / 2=harder / 3=expert.
 
-**Victory condition fields:** each VC has `enabled` plus the condition-specific
-value.  `must_meet` is how many simultaneously-satisfied conditions trigger a
-win; `min_years` is the minimum game length in years before any win can occur.
+#### Known limitations
 
-### Known limitations
-
-- **`player_positions` integer mapping**: Close=0, Moderate=1, Farther=2,
-  Distant=3 is inferred from the Stars! UI order; only `farther` (2) has been
-  oracle-tested.
+- **`player_positions`**: only `farther` (2) has been oracle-tested.
 - **AI `param` field**: always written as `1`; actual effect is unknown.
-- **Output file location**: `.hst` and `.mN` files are always written to the
-  CWD where `stars.exe` runs, regardless of the `output_xy` path.
+- **Output file location**: `.hst` and `.mN` files are written to the CWD
+  where `stars.exe` runs, regardless of `output_xy`.
+
+---
 
 ## File format background
 
-Stars! data files are record containers: a sequence of 2-byte little-endian
-headers (`high 6 bits = type`, `low 10 bits = payload length`) followed by
-payloads.  Type-8 records are plaintext file headers that seed an L'Ecuyer
-(1988) combined LCG; all other payloads are XOR-encrypted with the key stream
-produced by that LCG.
+Stars! binary data files (`.r1`, `.mN`, `.xN`, `.hst`, `.xy`) are record
+containers: a sequence of 2-byte little-endian headers (`high 6 bits = type`,
+`low 10 bits = payload length`) followed by payloads.  Type-8 records are
+plaintext file headers that seed an L'Ecuyer (1988) combined LCG; all other
+payloads are XOR-encrypted with the key stream from that LCG.
 
 The shared cipher and record-parsing logic lives in `src/cipher.rs` and
-`src/records.rs` so that all parsers can reuse it.
+`src/records.rs` so all parsers can reuse it.
 
 The `.r1` type-6 payload is a direct memory dump of a 192-byte struct.
 Confirmed field offsets:
@@ -330,14 +469,7 @@ Confirmed field offsets:
 | 81 | Flags: bit 7 = cheap germanium, bit 5 = expensive tech boost |
 | 112+ | Name section |
 
-Bytes 16–81 have the **same layout** in `.m` player turn files (type-6 PlayerBlock),
+Bytes 16–81 have the **same layout** in `.mN` player turn files (type-6 PlayerBlock),
 allowing `m1_to_json` to reuse the same race decoder.
 
 Full layout specification: `stars-reborn-design/docs/new_game/race_file_format.rst`.
-
-## Preset race names
-
-The six default Stars! races use a preset name encoding (marker bytes 6 or 7
-in the name section).  The lookup table in `r1_to_json.rs` covers all six
-singular and plural forms.  User-typed race names are decoded directly from
-the payload using a `byte − 111` character offset.
