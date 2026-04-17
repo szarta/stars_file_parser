@@ -56,7 +56,9 @@
 //   Surface minerals at b14-19 and population at b20+ confirmed for standard
 //   (non-depleted) case per Structure13.xml.
 // - FleetBlock (type-16): fleet name encoding unknown; b15 high bit and
-//   b17-18 encoding may change when cargo is present.
+//   fuel encoding may change when cargo is present.  b16 semantics unclear
+//   (correlates with fuel>255 / 23-byte records; NOT ship count).  Ship count
+//   is not decoded — all oracle starting fleets have 1 ship per fleet entry.
 // - Type-19 task payload (b8-17): Transport fully confirmed (exp4); payload
 //   decoded into TransportPayload struct.  Colonize payload is all zero.
 //   Other task types (Remote Mining, Patrol, etc.) not yet decoded.
@@ -229,20 +231,25 @@ struct PlanetRecord {
 
 /// One fleet record (type-16 FleetBlock).
 ///
-/// Confirmed field layout (from oracle experiments exp2.2 and exp3):
+/// Confirmed field layout (from oracle experiments exp2.2, exp3, R2.3):
 ///   b0-1  : fleet index (LE uint16)
 ///   b6-7  : current orbit planet index (LE uint16); 65535 = en route (deep space)
 ///   b8-9  : fleet X coordinate (LE int16)
 ///   b10-11: fleet Y coordinate (LE int16) — confirmed: Sulfur Y=1220, Godel Y=1331
 ///   b12-13: design bitmask (bit i set → design slot i present in fleet)
 ///   b14-15: number of stacks (b14 = actual count; b15 high bit may indicate cargo)
-///   b16   : total ship count
-///   b17-18: total fleet mass in kT (LE int16; high bits may be set when cargo present)
+///   b16   : unknown flags; correlates with fuel > 255 (value=1 when fuel≤255, 2 when
+///           fuel>255); previously misidentified as ship count — NOT the ship count
+///   b17-18: fuel on board in mg (LE uint16); confirmed 2026-04-17 from in-game
+///           Report→Fleets data (fuel=300 → b17-18=0x012C=300, fuel=50 → 0x0032=50);
+///           previously misidentified as total fleet mass in kT
 ///
 ///   Trailing bytes (confirmed from exp2.2 vs exp3 differential):
-///     22-byte records: b19-20=0, b21=waypoint_count
-///     23-byte records: b19-20=0, b21=battle_plan_idx (0-based), b22=waypoint_count
-///   Note: records grow from 22→23 bytes when fleet has cargo or multiple ships.
+///     22-byte records: b19-20=0, b21=waypoint_count   (fuel ≤ 255, b16=1)
+///     23-byte records: b19-20=0, b21=battle_plan_idx, b22=waypoint_count  (fuel > 255, b16=2)
+///
+/// Ship count is NOT encoded here for starting-game fleets; all single-design
+/// fleets in oracle games start with exactly 1 ship per fleet entry.
 #[derive(Debug, Serialize)]
 struct FleetRecord {
     fleet_index: u16,
@@ -256,10 +263,14 @@ struct FleetRecord {
     design_bitmask: u16,
     /// Number of distinct design stacks in this fleet.
     num_stacks: u16,
-    /// Total number of ships across all stacks.
-    ship_count: u8,
-    /// Total fleet mass in kT (LE int16; high bits may encode cargo info when cargo present).
-    total_mass_kt: i16,
+    /// Raw b16 byte; correlates with fuel > 255 but semantics unclear.
+    /// Value=1 when fuel≤255 (22-byte record), value=2 when fuel>255 (23-byte record).
+    /// Previously misidentified as ship count — do not use as ship count.
+    b16_raw: u8,
+    /// Fuel on board in mg (LE uint16; b17-18).
+    /// Confirmed from in-game Report→Fleets panel (2026-04-17, R2.3).
+    /// Previously misidentified as total fleet mass in kT.
+    fuel_mg: u16,
     /// 0-based index into player's battle plan list (present only in 23-byte records).
     /// 0=Default, 1=Kill Starbase, 2=Max-Defense, 3=Sniper, 4=Chicken, 5+=custom.
     battle_plan_idx: Option<u8>,
@@ -323,6 +334,8 @@ struct TurnState {
     /// Each fleet's waypoints follow its type-16 record; the first waypoint for an en-route
     /// fleet is the current position (is_current_position=true, warp_speed=0).
     waypoints: Vec<WaypointRecord>,
+    /// Ship and starbase designs (type-26 DesignBlock, full-design variant only).
+    designs: Vec<DesignRecord>,
 }
 
 // ── Record decoders ───────────────────────────────────────────────────────────
@@ -474,8 +487,8 @@ fn decode_type16(p: &[u8]) -> Option<FleetRecord> {
         y:               i16::from_le_bytes([p[10], p[11]]),
         design_bitmask:  u16::from_le_bytes([p[12], p[13]]),
         num_stacks:      u16::from_le_bytes([p[14], p[15]]),
-        ship_count:      p[16],
-        total_mass_kt:   i16::from_le_bytes([p[17], p[18]]),
+        b16_raw:         p[16],
+        fuel_mg:         u16::from_le_bytes([p[17], p[18]]),
         battle_plan_idx,
         waypoint_count,
     })
@@ -536,6 +549,275 @@ fn decode_type30(p: &[u8]) -> Option<BattlePlanRecord> {
     })
 }
 
+// ── DesignBlock (type-26) ─────────────────────────────────────────────────────
+//
+// Component name tables, 0-indexed (itemId = UNEDITED.MOD item_index − 1).
+// Source: stars-4x/starsapi UNEDITED.MOD; category-to-TechCategory mapping from Items.java:
+//   uneditedModCategories: null,Orbital,BeamWeapon,Torpedo,Bomb,null,Planetary,
+//   MiningRobot,MineLayer,Mechanical,Electrical,Shield,Scanner,Armor,Engine
+
+static ENGINE_NAMES: &[&str] = &[
+    "Settler's Delight", "Quick Jump 5", "Fuel Mizer", "Long Hump 6",
+    "Daddy Long Legs 7", "Alpha Drive 8", "Trans-Galactic Drive", "Interspace-10",
+    "Enigma Pulsar", "Trans-Star 10", "Radiating Hydro-Ram Scoop",
+    "Sub-Galactic Fuel Scoop", "Trans-Galactic Fuel Scoop",
+    "Trans-Galactic Super Scoop", "Trans-Galactic Mizer Scoop", "Galaxy Scoop",
+];
+static SCANNER_NAMES: &[&str] = &[
+    "Bat Scanner", "Rhino Scanner", "Mole Scanner", "DNA Scanner",
+    "Possum Scanner", "Pick Pocket Scanner", "Chameleon Scanner", "Ferret Scanner",
+    "Dolphin Scanner", "Gazelle Scanner", "RNA Scanner", "Cheetah Scanner",
+    "Elephant Scanner", "Eagle Eye Scanner", "Robber Baron Scanner", "Peerless Scanner",
+];
+static SHIELD_NAMES: &[&str] = &[
+    "Mole-skin Shield", "Cow-hide Shield", "Wolverine Diffuse Shield", "Croby Sharmor",
+    "Shadow Shield", "Bear Neutrino Barrier", "Langston Shell", "Gorilla Delagator",
+    "Elephant Hide Fortress", "Complete Phase Shield",
+];
+static ARMOR_NAMES: &[&str] = &[
+    "Tritanium", "Crobmnium", "Carbonic Armor", "Strobnium",
+    "Organic Armor", "Kelarium", "Fielded Kelarium", "Depleted Neutronium",
+    "Neutronium", "Mega Poly Shell", "Valanium", "Superlatanium",
+];
+static BEAMWEAPON_NAMES: &[&str] = &[
+    "Laser", "X-Ray Laser", "Mini Gun", "Yakimora Light Phaser",
+    "Blackjack", "Phaser Bazooka", "Pulsed Sapper", "Colloidal Phaser",
+    "Gatling Gun", "Mini Blaster", "Bludgeon", "Mark IV Blaster",
+    "Phased Sapper", "Heavy Blaster", "Gatling Neutrino Cannon", "Myopic Disruptor",
+    "Blunderbuss", "Disruptor", "Multi Contained Munition", "Syncro Sapper",
+    "Mega Disruptor", "Big Mutha Cannon", "Streaming Pulverizer", "Anti-Matter Pulverizer",
+];
+static TORPEDO_NAMES: &[&str] = &[
+    "Alpha Torpedo", "Beta Torpedo", "Delta Torpedo", "Epsilon Torpedo",
+    "Rho Torpedo", "Upsilon Torpedo", "Omega Torpedo", "Anti Matter Torpedo",
+    "Jihad Missile", "Juggernaut Missile", "Doomsday Missile", "Armageddon Missile",
+];
+static BOMB_NAMES: &[&str] = &[
+    "Lady Finger Bomb", "Black Cat Bomb", "M-70 Bomb", "M-80 Bomb",
+    "Cherry Bomb", "LBU-17 Bomb", "LBU-32 Bomb", "LBU-74 Bomb",
+    "Hush-a-Boom", "Retro Bomb", "Smart Bomb", "Neutron Bomb",
+    "Enriched Neutron Bomb", "Peerless Bomb", "Annihilator Bomb",
+];
+static MININGROBOT_NAMES: &[&str] = &[
+    "Robo-Midget Miner", "Robo-Mini-Miner", "Robo-Miner", "Robo-Maxi-Miner",
+    "Robo-Super-Miner", "Robo-Ultra-Miner", "Alien Miner", "Orbital Adjuster",
+];
+static MINELAYER_NAMES: &[&str] = &[
+    "Mine Dispenser 40", "Mine Dispenser 50", "Mine Dispenser 80", "Mine Dispenser 130",
+    "Heavy Dispenser 50", "Heavy Dispenser 110", "Heavy Dispenser 200",
+    "Speed Trap 20", "Speed Trap 30", "Speed Trap 50",
+];
+static ORBITAL_NAMES: &[&str] = &[
+    "Stargate 100/250", "Stargate any/300", "Stargate 150/600", "Stargate 300/500",
+    "Stargate 100/any", "Stargate any/800", "Stargate any/any",
+    "Mass Driver 5", "Mass Driver 6", "Mass Driver 7",
+    "Super Driver 8", "Super Driver 9", "Ultra Driver 10",
+    "Ultra Driver 11", "Ultra Driver 12", "Ultra Driver 13",
+];
+static PLANETARY_NAMES: &[&str] = &[
+    "Viewer 50", "Viewer 90", "Scoper 150", "Scoper 220",
+    "Scoper 280", "Snooper 320X", "Snooper 400X", "Snooper 500X",
+    "Snooper 620X", "SDI", "Missile Battery", "Laser Battery",
+    "Planetary Shield", "Neutron Shield", "Genesis Device",
+];
+static ELECTRICAL_NAMES: &[&str] = &[
+    "Transport Cloaking", "Stealth Cloak", "Super-Stealth Cloak", "Ultra-Stealth Cloak",
+    "Multi Function Pod", "Battle Computer", "Battle Super Computer", "Battle Nexus",
+    "Jammer 10", "Jammer 20", "Jammer 30", "Jammer 50",
+    "Energy Capacitor", "Flux Capacitor", "Energy Dampener", "Tachyon Detector",
+    "Anti-matter Generator",
+];
+static MECHANICAL_NAMES: &[&str] = &[
+    "Colonization Module", "Orbital Construction Module", "Cargo Pod", "Super Cargo Pod",
+    "Multi Cargo Pod", "Fuel Tank", "Super Fuel Tank", "Maneuvering Jet",
+    "Overthruster", "Jump Gate", "Beam Deflector",
+];
+
+fn component_name(category: u16, item_id: u8) -> &'static str {
+    let id = item_id as usize;
+    let table: &[&str] = match category {
+        1      => ENGINE_NAMES,
+        2      => SCANNER_NAMES,
+        4      => SHIELD_NAMES,
+        8      => ARMOR_NAMES,
+        0x10   => BEAMWEAPON_NAMES,
+        0x20   => TORPEDO_NAMES,
+        0x40   => BOMB_NAMES,
+        0x80   => MININGROBOT_NAMES,
+        0x100  => MINELAYER_NAMES,
+        0x200  => ORBITAL_NAMES,
+        0x400  => PLANETARY_NAMES,
+        0x800  => ELECTRICAL_NAMES,
+        0x1000 => MECHANICAL_NAMES,
+        _      => return "?",
+    };
+    table.get(id).copied().unwrap_or("?")
+}
+
+fn category_name_str(category: u16) -> &'static str {
+    match category {
+        1      => "Engine",
+        2      => "Scanner",
+        4      => "Shield",
+        8      => "Armor",
+        0x10   => "BeamWeapon",
+        0x20   => "Torpedo",
+        0x40   => "Bomb",
+        0x80   => "MiningRobot",
+        0x100  => "MineLayer",
+        0x200  => "Orbital",
+        0x400  => "Planetary",
+        0x800  => "Electrical",
+        0x1000 => "Mechanical",
+        _      => "?",
+    }
+}
+
+fn hull_name_str(hull_id: u8) -> &'static str {
+    match hull_id {
+        0  => "Small Freighter",  1  => "Medium Freighter", 2  => "Large Freighter",
+        3  => "Super Freighter",  4  => "Scout",            5  => "Frigate",
+        6  => "Destroyer",        7  => "Cruiser",          8  => "Battle Cruiser",
+        9  => "Battleship",       10 => "Dreadnought",      11 => "Privateer",
+        12 => "Rogue",            13 => "Galleon",          14 => "Mini-Colony Ship",
+        15 => "Colony Ship",      16 => "Mini Bomber",      17 => "B-17 Bomber",
+        18 => "Stealth Bomber",   19 => "B-52 Bomber",      20 => "Midget Miner",
+        21 => "Mini-Miner",       22 => "Miner",            23 => "Maxi-Miner",
+        24 => "Ultra-Miner",      25 => "Fuel Transport",   26 => "Super-Fuel Xport",
+        27 => "Mini Mine Layer",  28 => "Super Mine Layer", 29 => "Nubian",
+        30 => "Mini Morph",       31 => "Meta Morph",       32 => "Orbital Fort",
+        33 => "Space Dock",       34 => "Space Station",    35 => "Ultra Station",
+        36 => "Death Star",
+        _  => "?",
+    }
+}
+
+/// Decode a Stars! nibble-encoded design name.
+///
+/// Format (Util.java:decodeStarsString / decodeHexStarsString):
+///   data[0]  = byte count of encoded data (nameLen)
+///   data[1..1+nameLen] = encoded bytes; processed as 2*nameLen nibbles (hi nibble first)
+///
+/// Nibble encoding: 0x0-0xA → 1-nibble (index into " aehilnorst");
+///   0xB-0xE → 2-nibble (prefix + index into one of four 16-char tables);
+///   0xF → 2-nibble raw ASCII (lo nibble then hi nibble of the byte).
+fn decode_stars_name(data: &[u8]) -> String {
+    if data.is_empty() { return String::new(); }
+    let name_len = data[0] as usize;
+    if data.len() < 1 + name_len { return String::new(); }
+    let encoded = &data[1..1 + name_len];
+
+    const ONE: [char; 11] = [' ','a','e','h','i','l','n','o','r','s','t'];
+    const BT:  [char; 16] = ['A','B','C','D','E','F','G','H','I','J','K','L','M','N','O','P'];
+    const CT:  [char; 16] = ['Q','R','S','T','U','V','W','X','Y','Z','0','1','2','3','4','5'];
+    const DT:  [char; 16] = ['6','7','8','9','b','c','d','f','g','j','k','m','p','q','u','v'];
+    const ET:  [char; 16] = ['w','x','y','z','+','-',',','!','.','?',':',';','\'','*','%','$'];
+
+    let nibs: Vec<u8> = encoded.iter().flat_map(|&b| [(b >> 4) & 0xF, b & 0xF]).collect();
+    let mut result = String::new();
+    let mut i = 0;
+    let limit = name_len * 2;
+    while i < limit && i < nibs.len() {
+        let n = nibs[i];
+        match n {
+            0..=10 => { result.push(ONE[n as usize]); i += 1; }
+            11 => { i += 1; if i < nibs.len() { result.push(BT[nibs[i] as usize]); i += 1; } }
+            12 => { i += 1; if i < nibs.len() { result.push(CT[nibs[i] as usize]); i += 1; } }
+            13 => { i += 1; if i < nibs.len() { result.push(DT[nibs[i] as usize]); i += 1; } }
+            14 => { i += 1; if i < nibs.len() { result.push(ET[nibs[i] as usize]); i += 1; } }
+            15 => {
+                i += 1;
+                if i + 1 < nibs.len() {
+                    let lo = nibs[i] as u32; i += 1;
+                    let hi = nibs[i] as u32; i += 1;
+                    if let Some(c) = char::from_u32((lo << 4) | hi) { result.push(c); }
+                }
+            }
+            _ => { i += 1; }
+        }
+    }
+    result
+}
+
+/// One slot within a ship or starbase design.
+#[derive(Debug, Serialize)]
+struct DesignSlot {
+    category: u16,
+    /// Human-readable category name (empty string for empty slots where count=0).
+    category_name: String,
+    item_id: u8,
+    count: u8,
+    /// Component name from UNEDITED.MOD (empty string for empty slots).
+    component: String,
+}
+
+/// One ship or starbase design decoded from a type-26 DesignBlock (full-design only).
+///
+/// Confirmed from DesignBlock.java (stars-4x/starsapi) and oracle IT0001.m1.
+/// See stars-reborn-research/docs/findings/starting_fleets_it.rst for field layout.
+#[derive(Debug, Serialize)]
+struct DesignRecord {
+    design_number: u8,
+    is_starbase: bool,
+    hull_id: u8,
+    hull_name: String,
+    pic: u8,
+    armor: u16,
+    slot_count: u8,
+    turn_designed: u16,
+    total_built: u32,
+    total_remaining: u32,
+    name: String,
+    slots: Vec<DesignSlot>,
+}
+
+/// Decode a type-26 DesignBlock payload.  Returns None for non-full-design records.
+fn decode_type26(p: &[u8]) -> Option<DesignRecord> {
+    if p.len() < 17 { return None; }
+    if (p[0] & 3) != 3 { return None; }
+    if (p[0] & 0x04) == 0 { return None; }
+    let is_starbase     = (p[1] & 0x40) != 0;
+    let design_number   = (p[1] & 0x3C) >> 2;
+    let hull_id         = p[2];
+    let pic             = p[3];
+    let armor           = u16::from_le_bytes([p[4], p[5]]);
+    let slot_count      = p[6] as usize;
+    let turn_designed   = u16::from_le_bytes([p[7], p[8]]);
+    let total_built     = u32::from_le_bytes([p[9], p[10], p[11], p[12]]);
+    let total_remaining = u32::from_le_bytes([p[13], p[14], p[15], p[16]]);
+    let slots_end = 17 + slot_count * 4;
+    if p.len() < slots_end { return None; }
+    let mut slots = Vec::with_capacity(slot_count);
+    for i in 0..slot_count {
+        let off = 17 + i * 4;
+        let category = u16::from_le_bytes([p[off], p[off + 1]]);
+        let item_id  = p[off + 2];
+        let count    = p[off + 3];
+        let (category_name, component) = if count == 0 {
+            (String::new(), String::new())
+        } else {
+            (category_name_str(category).to_string(),
+             component_name(category, item_id).to_string())
+        };
+        slots.push(DesignSlot { category, category_name, item_id, count, component });
+    }
+    let name = decode_stars_name(p.get(slots_end..).unwrap_or(&[]));
+    Some(DesignRecord {
+        design_number,
+        is_starbase,
+        hull_id,
+        hull_name: hull_name_str(hull_id).to_string(),
+        pic,
+        armor,
+        slot_count: p[6],
+        turn_designed,
+        total_built,
+        total_remaining,
+        name,
+        slots,
+    })
+}
+
 // ── Main ─────────────────────────────────────────────────────────────────────
 
 fn main() {
@@ -565,6 +847,7 @@ fn main() {
     let mut planets: Vec<PlanetRecord> = Vec::new();
     let mut fleets: Vec<FleetRecord> = Vec::new();
     let mut waypoints: Vec<WaypointRecord> = Vec::new();
+    let mut designs: Vec<DesignRecord> = Vec::new();
 
     for rec in &records {
         match rec.rtype {
@@ -603,6 +886,11 @@ fn main() {
                     waypoints.push(wp);
                 }
             }
+            26 => {
+                if let Some(d) = decode_type26(&rec.payload) {
+                    designs.push(d);
+                }
+            }
             30 => {
                 if let Some(bp) = decode_type30(&rec.payload) {
                     battle_plans.push(bp);
@@ -629,6 +917,7 @@ fn main() {
         planets,
         fleets,
         waypoints,
+        designs,
     };
 
     let json = serde_json::to_string_pretty(&turn).unwrap_or_else(|e| {

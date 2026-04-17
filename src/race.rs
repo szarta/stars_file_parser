@@ -198,9 +198,9 @@ pub struct ResearchCosts {
     pub construction: TechCost,
     pub electronics: TechCost,
     pub biotechnology: TechCost,
-    /// byte 81 bit 5: 'All "Costs 75% extra" research fields start at Tech 3'.
-    /// Confirmed 2026-04-14 via viewai inspection.
-    pub expensive_tech_start_at_3: bool,
+    /// byte 81 bit 5: 'All "Costs 75% extra" research fields start at Tech 4'.
+    /// Confirmed 2026-04-16 via Stars! race editor screenshot.
+    pub expensive_tech_start_at_4: bool,
 }
 
 // ── Race ──────────────────────────────────────────────────────────────────────
@@ -340,7 +340,7 @@ pub fn race_from_payload(p: &[u8]) -> Result<Race, String> {
             construction:  tech(p[73])?,
             electronics:   tech(p[74])?,
             biotechnology: tech(p[75])?,
-            expensive_tech_start_at_3: (p[81] & 0x20) != 0,
+            expensive_tech_start_at_4: (p[81] & 0x20) != 0,
         },
         leftover_spend: LeftoverSpend::from_byte(p[69])
             .ok_or_else(|| format!("unknown leftover_spend byte {}", p[69]))?,

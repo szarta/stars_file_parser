@@ -9,3 +9,4 @@ pub mod records;
 pub mod race;
 pub mod universe;
 pub mod gamedef;
+pub mod advantage_points;

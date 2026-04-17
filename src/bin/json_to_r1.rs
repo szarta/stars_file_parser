@@ -23,6 +23,7 @@
 use std::{env, io::Read, path::Path, process};
 
 use stars_file_parser::{
+    advantage_points::advantage_points,
     cipher::{decrypt, derive_pre_advance, derive_seeds, LcgState},
     race::{HabAxis, Lrt, Prt, Race, TechCost},
 };
@@ -262,10 +263,10 @@ fn build_payload(race: &Race) -> Vec<u8> {
     p[78] = lrt_lo;
     p[79] = lrt_hi;
 
-    // b81: flags. bit 7 = factory_cheap_germanium, bit 5 = expensive_tech_start_at_3.
+    // b81: flags. bit 7 = factory_cheap_germanium, bit 5 = expensive_tech_start_at_4.
     let mut flags = 0u8;
     if race.economy.factory_cheap_germanium           { flags |= 0x80; }
-    if race.research_costs.expensive_tech_start_at_3  { flags |= 0x20; }
+    if race.research_costs.expensive_tech_start_at_4  { flags |= 0x20; }
     p[81] = flags;
 
     // b112+: name section.
@@ -353,6 +354,12 @@ fn main() {
         eprintln!("JSON parse error: {e}");
         process::exit(1);
     });
+
+    let ap = advantage_points(&race);
+    if ap < 0 {
+        eprintln!("error: race design is over budget ({ap} advantage points); Stars! would silently substitute JOAT data");
+        process::exit(1);
+    }
 
     let file_bytes = build_file(&race);
 
