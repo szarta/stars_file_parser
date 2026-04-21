@@ -170,15 +170,21 @@ struct QueueItem {
 enum Order {
     /// Type-1 ManualSmallLoadUnloadTaskBlock.
     ///
-    /// Waypoint-0 cargo transfer (immediate, at current planet).
-    /// One record per transfer event; variable length based on how many
-    /// resources are set.  action byte b4 = 0x12 in all load experiments.
+    /// Immediate cargo transfer at the fleet's current planet (waypoint-0).
+    /// One record per transfer event; variable length depending on how many
+    /// resource types are involved.
+    ///
+    /// action_byte values (confirmed 2026-04-20/21):
+    ///   0x12 = load  (move cargo from planet surface to fleet)
+    ///   0x02 = unload (move cargo from fleet to planet surface)
+    ///   load and unload differ by bit 4 (0x10).
     ///
     /// resource_mask bits: 0=ironium, 1=boranium, 2=germanium, 3=colonists.
     /// amounts: one entry per set bit in ascending bit order (iron, boran, germ, col).
     ManualCargoTransfer {
         fleet_num:     u16,
         planet_idx:    u16,
+        /// 0x12 = load, 0x02 = unload.
         action_byte:   u8,
         resource_mask: u8,
         /// Amounts in kT, in ascending resource order (iron, boran, germ, col).

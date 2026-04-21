@@ -54,10 +54,12 @@
 //   per-mineral widths shift concentrations and all downstream offsets correctly
 //   (confirmed 2026-04-17 against T1→T2 oracle: pop/mines/factories/defenses all ✓).
 //   Terraformed planets (PlanetInfo bit 10 set) are not yet tested.
-// - FleetBlock (type-16): fleet name encoding unknown; b15 high bit and
-//   fuel encoding may change when cargo is present.  b16 semantics unclear
-//   (correlates with fuel>255 / 23-byte records; NOT ship count).  Ship count
-//   is not decoded — all oracle starting fleets have 1 ship per fleet entry.
+// - FleetBlock (type-16): full layout confirmed 2026-04-20 from Structure16.xml +
+//   starsapi PartialFleetBlock.java (see findings/fleetblock_structure.rst).
+//   Cargo section decoded for the colonists+fuel case (oracle: SS/CA colony ships).
+//   Iron/boranium/germanium cargo NOT yet decoded (cargo_bitmap0 bits 0-5 assumed 0).
+//   Fleet names come from DesignBlock (type-26) by default; FleetNameBlock (type-21)
+//   for custom names — type-21 not decoded (absent in all oracle data).
 // - Type-19 task payload (b8-17): Transport fully confirmed (exp4); payload
 //   decoded into TransportPayload struct.  Colonize payload is all zero.
 //   Other task types (Remote Mining, Patrol, etc.) not yet decoded.
@@ -230,55 +232,70 @@ struct PlanetRecord {
 
 /// One fleet record (type-16 FleetBlock).
 ///
-/// Confirmed field layout (from oracle experiments exp2.2, exp3, R2.3, ai-game 2026-04-17):
-///   b0-1  : fleet index (LE uint16)
-///   b2-3  : player_idx (LE uint16, 0-based) — confirmed from 16-player ai-game corpus
-///   b4    : unknown constant (0x07 in all observed games)
-///   b5    : flags byte; base 0x09 (bits 0+3 set); bit 5 (0x20) meaning unknown
-///   b6-7  : current orbit planet index (LE uint16); 65535 = en route (deep space)
-///   b8-9  : fleet X coordinate (LE int16)
-///   b10-11: fleet Y coordinate (LE int16) — confirmed: Sulfur Y=1220, Godel Y=1331
-///   b12-13: design bitmask (bit i set → design slot i present in fleet)
-///   b14   : stack count (number of distinct design stacks)
-///   b15   : cargo flags byte; 0x00=no cargo; bit 6 (0x40)=colonists on board
-///   b16   : record-format flag; 1=small-fuel (≤255 mg), 2=large-fuel (>255 mg)
+/// Full layout confirmed 2026-04-20 (Structure16.xml + starsapi PartialFleetBlock.java):
+///   b0-1  : FleetAndOwnerIDs — bits 0-8 = fleet_id (9-bit), bits 9-12 = owner_id (4-bit)
+///           b0 = fleet_id low byte; b1 = (fleet_id bit8) | (owner_id << 1)
+///   b2-3  : unknown (always 0x00 in oracle data)
+///   b4    : kindByte — 7=FULL_KIND (all oracle), 3=PARTIAL_KIND, 4=PICK_POCKET_KIND
+///   b5    : flags — bit3 (0x08) = ShipCountLengthsAre1InsteadOf2; observed 0x09 always
+///   b6-7  : positionObjectId (LE uint16) — planet/starbase being orbited; 65535=en route
+///   b8-9  : X coordinate (LE int16)
+///   b10-11: Y coordinate (LE int16)
+///   b12-13: ShipTypeBitmap (LE uint16) — bit N = design slot N present
+///   b14+  : per-slot ship counts (1 byte each when b5 bit3=1; one count per set bit,
+///           ascending slot order)
+///   then  : CargoLengthBitmap (2 bytes):
+///             byte 0 bits 1-0=IronLen, 3-2=BoranLen, 5-4=GermLen, 7-6=PopLen
+///             byte 1 bits 1-0=FuelLen  (width code: 0→0B, 1→1B, 2→2B, 3→4B)
+///   then  : cargo values (ironium, boranium, germanium, population, fuel — variable)
+///   then  : DamagedShipTypeBitmap(2) + damaged slot counts + battlePlan(1) + waypointCount(1)
 ///
-///   NO-CARGO (b15=0x00):
-///     b16=1 (22-byte): b17-18=fuel_mg LE uint16, b19-20=0, b21=waypoint_count
-///     b16=2 (23-byte): b17-18=fuel_mg LE uint16, b19-20=0, b21=battle_plan_idx, b22=waypoints
+/// This decoder handles single-slot fleets (b5=0x09 → 1-byte ship counts) only.
+/// Cargo decoded for the colonists+fuel case; iron/boran/germ cargo assumed absent.
 ///
-///   CARGO (b15 bit 6 set, 23-byte):
-///     b16=1, b17=colonists_kt (units of 1000 colonists), b18=fuel_mg (1-byte),
-///     b19-20=0, b21=battle_plan_idx, b22=waypoint_count
-///     Confirmed: SS/CA colony ships ai-game/7 — 25kt colonists, 200mg fuel ✓
+///   NO-CARGO (cargo_bitmap0=0x00):
+///     fuel_len=1 (22-byte): b15=0, b16=fuel_len_code=1, b17=fuel(1B), b18-19=damaged=0,
+///                           b20=battle_plan, b21=waypoint_count
+///     fuel_len=2 (23-byte): b15=0, b16=fuel_len_code=2, b17-18=fuel(2B), b19-20=damaged=0,
+///                           b21=battle_plan, b22=waypoint_count
+///
+///   COLONISTS+FUEL (cargo_bitmap0 bit 6 set = PopLen≥1):
+///     b15=0x40, b16=fuel_len_code=1, b17=population(1B), b18=fuel(1B),
+///     b19-20=damaged=0, b21=battle_plan, b22=waypoint_count
+///     Confirmed: SS/CA colony ships — 25kT colonists, 200mg fuel ✓
 #[derive(Debug, Serialize)]
 struct FleetRecord {
     fleet_index: u16,
-    /// Player index (0-based); b2-3 LE uint16. Confirmed from 16-player ai-game corpus.
-    player_idx: u16,
+    /// Owner ID (0-based player index); bits 1-4 of b1: (b1 >> 1) & 0x0F.
+    /// Always 0 in single-player .m1 files (fleet owner = the file's player).
+    owner_id: u8,
     /// Planet currently orbited (LE uint16); 65535 = en route / deep space.
     orbit_planet_idx: u16,
     /// True when orbit_planet_idx == 65535 (fleet is moving between planets).
     en_route: bool,
     x: i16,
     y: i16,
-    /// Bitmask of design slots used (bit 0 = slot 0, bit 1 = slot 1, …).
+    /// ShipTypeBitmap (b12-13): bit N set = design slot N present in fleet.
     design_bitmask: u16,
-    /// Number of distinct design stacks in this fleet (b14).
-    num_stacks: u8,
-    /// Cargo flags (b15): 0x00=none; bit 6 (0x40)=colonists on board.
-    cargo_flags: u8,
-    /// Record-format flag (b16): 1=fuel fits in 1 byte, 2=fuel needs 2 bytes.
-    fmt_flag: u8,
+    /// Ship count for the first occupied design slot (b14, 1 byte when b5 bit3=1).
+    /// For single-design starting fleets: always 1.
+    first_slot_ship_count: u8,
+    /// CargoLengthBitmap byte 0 (b15): bits 7-6=PopLen, 5-4=GermLen, 3-2=BoranLen, 1-0=IronLen.
+    /// 0x00 = no mineral/pop cargo; bit 6 set = colonists present (PopLen bit0=1 → ≥1 byte).
+    cargo_bitmap0: u8,
+    /// CargoLengthBitmap byte 1 (b16): bits 1-0=FuelLen code (0→0B,1→1B,2→2B,3→4B).
+    /// 1 = fuel fits in 1 byte (≤255mg); 2 = fuel needs 2 bytes (>255mg).
+    cargo_bitmap1: u8,
     /// Fuel on board in mg. For no-cargo records: LE uint16 at b17-18.
-    /// For cargo records (b15 bit 6): 1-byte value at b18.
+    /// For colonists+fuel records (cargo_bitmap0 bit 6 set): 1-byte value at b18.
     fuel_mg: u16,
-    /// Colonists on board in units of 1000 (kT). Only present when b15 bit 6 set.
-    /// Confirmed: b17=25 → 25,000 colonists (ai-game/7/Game.m7 ✓).
+    /// Colonists on board in units of 100 colonists.
+    /// Present when cargo_bitmap0 bit 6 set (PopLen≥1); stored at b17 as 1 byte.
+    /// Confirmed: b17=250 → 25,000 colonists (ai-game/7/Game.m7 ✓).
     #[serde(skip_serializing_if = "Option::is_none")]
-    colonists_kt: Option<u8>,
-    /// 0-based index into player's battle plan list (present in 23-byte records).
-    /// 0=Default, 1=Kill Starbase, 2=Max-Defense, 3=Sniper, 4=Chicken, 5+=custom.
+    colonists_100: Option<u8>,
+    /// Battle plan index × 16 (present in 23-byte FULL_KIND records).
+    /// 0=Default, 16=slot1, 32=slot2, …
     battle_plan_idx: Option<u8>,
     /// Number of waypoints for this fleet (including current-position waypoint when en route).
     waypoint_count: u8,
@@ -489,47 +506,55 @@ fn decode_type13(p: &[u8]) -> Option<PlanetRecord> {
 
 fn decode_type16(p: &[u8]) -> Option<FleetRecord> {
     if p.len() < 19 { return None; }
-    let orbit       = u16::from_le_bytes([p[6], p[7]]);
-    let cargo_flags = p[15];
-    let fmt_flag    = p[16];
-    let has_cargo   = (cargo_flags & 0x40) != 0;
+    let orbit        = u16::from_le_bytes([p[6], p[7]]);
+    let cargo_bitmap0 = p[15];   // CargoLengthBitmap byte 0: bits 7-6=PopLen, 5-4=GermLen, …
+    let cargo_bitmap1 = p[16];   // CargoLengthBitmap byte 1: bits 1-0=FuelLen code
+    // Bit 6 of cargo_bitmap0 = low bit of PopLen: set when colonists are on board.
+    // TODO: bits 0-5 of cargo_bitmap0 encode IronLen, BoranLen, GermLen — not yet decoded;
+    //       assumed 0 (no mineral cargo) for current oracle data.
+    let has_colonists = (cargo_bitmap0 & 0x40) != 0;
 
-    // Cargo records (b15 bit 6 set): always 23-byte; b17=colonists_kt, b18=fuel_mg (1 byte).
-    // No-cargo records: b16=1 → 22-byte (fuel LE uint16 at b17-18, waypoints at b21);
-    //                   b16=2 → 23-byte (fuel LE uint16 at b17-18, battle_plan at b21, wps at b22).
-    let (fuel_mg, colonists_kt, battle_plan_idx, waypoint_count) = if has_cargo {
-        let colonists = if p.len() > 17 { Some(p[17]) } else { None };
-        let fuel      = if p.len() > 18 { p[18] as u16 } else { 0 };
-        let bp        = if p.len() > 21 { Some(p[21]) } else { None };
-        let wps       = if p.len() > 22 { p[22] } else { 0 };
-        (fuel, colonists, bp, wps)
+    // Cargo path (colonists present): b17=population(1B), b18=fuel(1B), tail at b19+.
+    // No-cargo path: fuel at b17 (1 or 2 bytes per cargo_bitmap1 bits 0-1), tail follows.
+    let (fuel_mg, colonists_100, battle_plan_idx, waypoint_count) = if has_colonists {
+        let pop  = if p.len() > 17 { Some(p[17]) } else { None };
+        let fuel = if p.len() > 18 { p[18] as u16 } else { 0 };
+        let bp   = if p.len() > 21 { Some(p[21]) } else { None };
+        let wps  = if p.len() > 22 { p[22] } else { 0 };
+        (fuel, pop, bp, wps)
     } else {
-        let fuel = u16::from_le_bytes([
-            if p.len() > 17 { p[17] } else { 0 },
-            if p.len() > 18 { p[18] } else { 0 },
-        ]);
-        let (bp, wps) = match (fmt_flag, p.len()) {
-            (1, 22) | (_, 22) => (None,         if p.len() > 21 { p[21] } else { 0 }),
-            (2, 23) | (_, 23) => (if p.len() > 21 { Some(p[21]) } else { None },
-                                  if p.len() > 22 { p[22] } else { 0 }),
-            _ => (None, 0),
+        let fuel_len = (cargo_bitmap1 & 0x03) as usize; // 0→0B, 1→1B, 2→2B, 3→4B
+        let fuel = match fuel_len {
+            1 => if p.len() > 17 { p[17] as u16 } else { 0 },
+            _ => u16::from_le_bytes([
+                if p.len() > 17 { p[17] } else { 0 },
+                if p.len() > 18 { p[18] } else { 0 },
+            ]),
+        };
+        // Tail: DamagedShipTypeBitmap(2) + battlePlan(1) + waypointCount(1) follow cargo.
+        // Offset after fuel = 17 + fuel_len (clamped to 2 max for 16-bit reads).
+        let tail = 17 + fuel_len.min(2);
+        let (bp, wps) = if p.len() > tail + 2 {
+            (Some(p[tail + 2]), if p.len() > tail + 3 { p[tail + 3] } else { 0 })
+        } else {
+            (None, if p.len() > tail + 2 { p[tail + 2] } else { 0 })
         };
         (fuel, None, bp, wps)
     };
 
     Some(FleetRecord {
-        fleet_index:      u16::from_le_bytes([p[0], p[1]]),
-        player_idx:       u16::from_le_bytes([p[2], p[3]]),
-        orbit_planet_idx: orbit,
-        en_route:         orbit == 65535,
-        x:                i16::from_le_bytes([p[8],  p[9]]),
-        y:                i16::from_le_bytes([p[10], p[11]]),
-        design_bitmask:   u16::from_le_bytes([p[12], p[13]]),
-        num_stacks:       p[14],
-        cargo_flags,
-        fmt_flag,
+        fleet_index:          (p[0] as u16) | (((p[1] & 1) as u16) << 8),  // 9-bit fleet ID
+        owner_id:             (p[1] >> 1) & 0x0F,  // b1 bits 1-4
+        orbit_planet_idx:     orbit,
+        en_route:             orbit == 65535,
+        x:                    i16::from_le_bytes([p[8],  p[9]]),
+        y:                    i16::from_le_bytes([p[10], p[11]]),
+        design_bitmask:       u16::from_le_bytes([p[12], p[13]]),
+        first_slot_ship_count: p[14],
+        cargo_bitmap0,
+        cargo_bitmap1,
         fuel_mg,
-        colonists_kt,
+        colonists_100,
         battle_plan_idx,
         waypoint_count,
     })

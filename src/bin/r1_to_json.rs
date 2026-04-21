@@ -22,6 +22,13 @@ use stars_file_parser::{
 // Maps the full data bytes of a preset name block to the name string.
 // Singular and plural blocks share the same first bytes but differ in the last
 // byte (and sometimes the marker).  Both are stored explicitly here.
+//
+// Stars! uses preset encoding for ALL names — including names typed by the user
+// in the race editor.  The claim that markers ≥ 8 encode user-typed names via
+// char−111 was a hypothesis that has never been observed in any authentic
+// Stars! file (falsified 2026-04-18, oracle: terrans.r1 → 4-byte preset).
+// This table is incomplete; see research task R1.7 in stars-reborn-research.
+// Unknown presets return None and decode as "<preset:hex>".
 
 fn lookup_preset_name(data: &[u8]) -> Option<&'static str> {
     match data {
@@ -37,6 +44,8 @@ fn lookup_preset_name(data: &[u8]) -> Option<&'static str> {
         &[193, 29, 77, 68, 167, 77, 105]    => Some("Rabbitoids"),
         &[194, 69, 77, 81, 103, 77, 111]    => Some("Silicanoid"),
         &[194, 69, 77, 81, 103, 77, 105]    => Some("Silicanoids"),
+        &[195, 40, 129, 111]                => Some("Terran"),
+        &[195, 40, 129, 105]                => Some("Terrans"),
         _                                   => None,
     }
 }
@@ -44,14 +53,14 @@ fn lookup_preset_name(data: &[u8]) -> Option<&'static str> {
 // ── Name section decoder ─────────────────────────────────────────────────────
 // Layout at payload[112..]:
 //   [0]          : 0x00 constant
-//   [1]          : singular block marker  (6 or 7 = preset; 8+ = user-typed)
-//   [2..2+marker]: marker bytes of data
+//   [1]          : singular block marker (observed range: 2–7)
+//   [2..2+marker]: marker bytes of data (opaque preset lookup key)
 //   [2+marker]   : plural block marker (or 0 = absent)
 //   …
 //
 // Block marker = number of data bytes that follow.
-// Preset blocks: data is an opaque lookup key.
-// User-typed blocks: each byte b encodes char = (b − 111).
+// All blocks are preset-encoded; Stars! has no user-typed name encoding.
+// Decode via lookup_preset_name(); unknown keys decode as "<preset:hex>".
 
 fn decode_name_block(payload: &[u8], start: usize) -> Option<(String, usize)> {
     if start >= payload.len() { return None; }
@@ -60,16 +69,13 @@ fn decode_name_block(payload: &[u8], start: usize) -> Option<(String, usize)> {
     let data_end = (start + 1 + marker).min(payload.len());
     let data = &payload[start + 1..data_end];
 
-    let name = if marker <= 7 {
-        lookup_preset_name(data)
-            .map(|s| s.to_owned())
-            .unwrap_or_else(|| {
-                let hex: String = data.iter().map(|b| format!("{b:02x}")).collect();
-                format!("<preset:{hex}>")
-            })
-    } else {
-        data.iter().map(|&b| (b.wrapping_sub(111)) as char).collect()
-    };
+    // All Stars! name blocks are preset-encoded regardless of marker length.
+    let name = lookup_preset_name(data)
+        .map(|s| s.to_owned())
+        .unwrap_or_else(|| {
+            let hex: String = data.iter().map(|b| format!("{b:02x}")).collect();
+            format!("<preset:{hex}>")
+        });
 
     Some((name, start + 1 + marker))
 }

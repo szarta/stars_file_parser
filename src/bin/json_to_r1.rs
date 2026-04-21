@@ -140,9 +140,14 @@ fn encode_tech_cost(tc: &TechCost) -> u8 {
 }
 
 // ── Preset name encoding ──────────────────────────────────────────────────────
-// Returns the preset byte sequence for the six default races (singular and
-// plural).  For any other name, returns None and the caller falls through to
-// user-typed encoding.
+// Stars! uses preset encoding for ALL names — including names typed in the race
+// editor.  The encoding is opaque (not derived from character values beyond the
+// first byte).  The full table lives in stars.exe; see R1.7 in PLAN.md.
+//
+// For names not in the known table, encode_name_bytes() falls back to a
+// char+111 encoding with min length 8.  This fallback has NOT been confirmed
+// to display correctly in the original Stars! game — it is a best-effort
+// placeholder until R1.7 enumerates the full preset table.
 fn preset_bytes(name: &str) -> Option<Vec<u8>> {
     match name {
         "Humanoid"    => Some(vec![183, 222, 219, 22, 116, 214]),
@@ -157,25 +162,26 @@ fn preset_bytes(name: &str) -> Option<Vec<u8>> {
         "Rabbitoids"  => Some(vec![193,  29,  77, 68, 167,  77, 105]),
         "Silicanoid"  => Some(vec![194,  69,  77, 81, 103,  77, 111]),
         "Silicanoids" => Some(vec![194,  69,  77, 81, 103,  77, 105]),
+        "Terran"      => Some(vec![195,  40, 129, 111]),
+        "Terrans"     => Some(vec![195,  40, 129, 105]),
         _             => None,
     }
 }
 
-/// Encode a name to raw bytes suitable for inclusion in the name section.
+/// Encode a name to raw bytes for the name section.
 ///
-/// For preset names: returns the opaque preset byte sequence.
-/// For user-typed names: each character is encoded as (ascii + 111).
-/// User-typed names shorter than 8 characters are padded with spaces
-/// (space = 32, encoded as 32 + 111 = 143) to keep the marker ≥ 8.
-/// This is needed because the r1_to_json decoder treats marker ≤ 7 as a
-/// preset block; markers ≥ 8 are user-typed.
+/// Known names use their confirmed preset byte sequence.  Unknown names fall
+/// back to char+111 encoding (min 8 bytes) — this is a best-effort path that
+/// has NOT been oracle-confirmed to display correctly in the original Stars!
+/// game.  The original game stores all names as preset keys; the fallback may
+/// produce a garbled race name in Stars! display while leaving mechanics intact.
 fn encode_name_bytes(name: &str) -> Vec<u8> {
     if let Some(bytes) = preset_bytes(name) {
         return bytes;
     }
     let mut bytes: Vec<u8> = name.bytes().map(|b| b.wrapping_add(111)).collect();
     while bytes.len() < 8 {
-        bytes.push(32u8.wrapping_add(111)); // pad with space
+        bytes.push(32u8.wrapping_add(111)); // pad with encoded space
     }
     bytes
 }
