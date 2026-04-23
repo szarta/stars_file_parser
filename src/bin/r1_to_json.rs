@@ -18,66 +18,91 @@ use stars_file_parser::{
     records::{first_payload_of_type, parse_file},
 };
 
-// ── Preset name lookup ────────────────────────────────────────────────────────
-// Maps the full data bytes of a preset name block to the name string.
-// Singular and plural blocks share the same first bytes but differ in the last
-// byte (and sometimes the marker).  Both are stored explicitly here.
+// ── Name encoding algorithm ───────────────────────────────────────────────────
+// Confirmed 2026-04-22 via Ghidra decompilation of FUN_1070_551c,
+// FUN_1040_45a0, and FUN_1040_4880 in stars.exe.
 //
-// Stars! uses preset encoding for ALL names — including names typed by the user
-// in the race editor.  The claim that markers ≥ 8 encode user-typed names via
-// char−111 was a hypothesis that has never been observed in any authentic
-// Stars! file (falsified 2026-04-18, oracle: terrans.r1 → 4-byte preset).
-// This table is incomplete; see research task R1.7 in stars-reborn-research.
-// Unknown presets return None and decode as "<preset:hex>".
+// All names (dropdown presets and user-typed) use the same nibble-packing
+// algorithm.  Each character maps to a code; codes are nibble-packed
+// high-nibble-first; odd nibble counts get a trailing 0xF pad nibble.
+//
+// Decoding: read nibble pairs from the key bytes to recover the original text.
 
-fn lookup_preset_name(data: &[u8]) -> Option<&'static str> {
-    match data {
-        &[183, 222, 219, 22, 116, 214]      => Some("Humanoid"),
-        &[183, 222, 219, 22, 116, 214, 159] => Some("Humanoids"),
-        &[176, 106, 42, 50, 129, 95]        => Some("Antetheral"),
-        &[176, 106, 42, 50, 129, 89]        => Some("Antheherals"),
-        &[184, 105, 45, 90, 116, 214]       => Some("Insectoid"),
-        &[184, 105, 45, 90, 116, 214, 159]  => Some("Insectoids"),
-        &[189, 222, 213, 82, 122, 77, 111]  => Some("Nucleotid"),
-        &[189, 222, 213, 82, 122, 77, 105]  => Some("Nucleotids"),
-        &[193, 29, 77, 68, 167, 77, 111]    => Some("Rabbitoid"),
-        &[193, 29, 77, 68, 167, 77, 105]    => Some("Rabbitoids"),
-        &[194, 69, 77, 81, 103, 77, 111]    => Some("Silicanoid"),
-        &[194, 69, 77, 81, 103, 77, 105]    => Some("Silicanoids"),
-        &[195, 40, 129, 111]                => Some("Terran"),
-        &[195, 40, 129, 105]                => Some("Terrans"),
-        _                                   => None,
+fn decode_name_key(data: &[u8]) -> String {
+    // Expand bytes to nibbles (high nibble first).
+    let mut nib: Vec<u8> = Vec::with_capacity(data.len() * 2);
+    for &b in data {
+        nib.push(b >> 4);
+        nib.push(b & 0xf);
     }
+
+    // Map second nibble in the 'd' group (n2 4..=15) to lowercase letters.
+    const D_GROUP: [char; 12] = ['b','c','d','f','g','j','k','m','p','q','u','v'];
+    const E_GROUP: [char;  4] = ['w','x','y','z'];
+    // Map code 0..=10 to characters (0=space, 1=a, 2=e, ..., 10=t).
+    const ONE_NIB: [char; 11] = [' ','a','e','h','i','l','n','o','r','s','t'];
+
+    let mut result = String::new();
+    let mut i = 0usize;
+    while i < nib.len() {
+        let n1 = nib[i]; i += 1;
+        match n1 {
+            0..=10 => result.push(ONE_NIB[n1 as usize]),
+            0xb => {
+                let n2 = if i < nib.len() { nib[i] } else { 0xf }; i += 1;
+                if n2 == 0xf { break; }
+                result.push(char::from(0x41 + n2));    // A–P
+            }
+            0xc => {
+                let n2 = if i < nib.len() { nib[i] } else { 0xf }; i += 1;
+                if n2 == 0xf { break; }
+                if n2 <= 9 { result.push(char::from(0x51 + n2)); }  // Q–Z
+                else       { result.push(char::from(0x30 + n2 - 10)); } // 0–5
+            }
+            0xd => {
+                let n2 = if i < nib.len() { nib[i] } else { 0xf }; i += 1;
+                if n2 == 0xf { break; }
+                if n2 <= 3 { result.push(char::from(0x36 + n2)); }  // 6–9
+                else if (n2 as usize) - 4 < D_GROUP.len() {
+                    result.push(D_GROUP[(n2 as usize) - 4]);
+                }
+            }
+            0xe => {
+                let n2 = if i < nib.len() { nib[i] } else { 0xf }; i += 1;
+                if n2 == 0xf { break; }
+                if (n2 as usize) < E_GROUP.len() { result.push(E_GROUP[n2 as usize]); }
+            }
+            0xf => {
+                // 3-nibble sequence or trailing pad.
+                if i + 1 < nib.len() {
+                    let n2 = nib[i]; let n3 = nib[i + 1]; i += 2;
+                    if n3 == 0xf { break; }
+                    if let Some(c) = char::from_u32(((n3 as u32) << 4) | (n2 as u32)) {
+                        result.push(c);
+                    }
+                } else { break; }
+            }
+            _ => {}
+        }
+    }
+    result
 }
 
 // ── Name section decoder ─────────────────────────────────────────────────────
 // Layout at payload[112..]:
-//   [0]          : 0x00 constant
-//   [1]          : singular block marker (observed range: 2–7)
-//   [2..2+marker]: marker bytes of data (opaque preset lookup key)
-//   [2+marker]   : plural block marker (or 0 = absent)
+//   [0]        : 0x00 constant
+//   [1]        : singular key length
+//   [2..2+n]   : singular key bytes (nibble-packed encoded name)
+//   [2+n]      : plural key length (0 = absent; importer defaults to singular+'s')
 //   …
-//
-// Block marker = number of data bytes that follow.
-// All blocks are preset-encoded; Stars! has no user-typed name encoding.
-// Decode via lookup_preset_name(); unknown keys decode as "<preset:hex>".
 
 fn decode_name_block(payload: &[u8], start: usize) -> Option<(String, usize)> {
     if start >= payload.len() { return None; }
-    let marker = payload[start] as usize;
-    if marker == 0 { return None; }
-    let data_end = (start + 1 + marker).min(payload.len());
+    let key_len = payload[start] as usize;
+    if key_len == 0 { return None; }
+    let data_end = (start + 1 + key_len).min(payload.len());
     let data = &payload[start + 1..data_end];
-
-    // All Stars! name blocks are preset-encoded regardless of marker length.
-    let name = lookup_preset_name(data)
-        .map(|s| s.to_owned())
-        .unwrap_or_else(|| {
-            let hex: String = data.iter().map(|b| format!("{b:02x}")).collect();
-            format!("<preset:{hex}>")
-        });
-
-    Some((name, start + 1 + marker))
+    Some((decode_name_key(data), start + 1 + key_len))
 }
 
 fn decode_names(payload: &[u8]) -> (String, String) {

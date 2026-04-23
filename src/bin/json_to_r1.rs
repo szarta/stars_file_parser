@@ -15,7 +15,6 @@
 //
 // Known limitations
 // -----------------
-// - User-typed names shorter than 8 characters are padded with spaces.
 // - The plural name is always written explicitly; if you round-trip a file
 //   that relied on the r1_to_json fallback (singular + 's'), the output file
 //   will contain explicit plural bytes, but the decoded name is unchanged.
@@ -139,74 +138,66 @@ fn encode_tech_cost(tc: &TechCost) -> u8 {
     }
 }
 
-// ── Preset name encoding ──────────────────────────────────────────────────────
-// Stars! uses preset encoding for ALL names — including names typed in the race
-// editor.  The encoding is opaque (not derived from character values beyond the
-// first byte).  The full table lives in stars.exe; see R1.7 in PLAN.md.
-//
-// For names not in the known table, encode_name_bytes() falls back to a
-// char+111 encoding with min length 8.  This fallback has NOT been confirmed
-// to display correctly in the original Stars! game — it is a best-effort
-// placeholder until R1.7 enumerates the full preset table.
-fn preset_bytes(name: &str) -> Option<Vec<u8>> {
-    match name {
-        "Humanoid"    => Some(vec![183, 222, 219, 22, 116, 214]),
-        "Humanoids"   => Some(vec![183, 222, 219, 22, 116, 214, 159]),
-        "Antetheral"  => Some(vec![176, 106,  42, 50, 129,  95]),
-        "Antheherals" => Some(vec![176, 106,  42, 50, 129,  89]),
-        "Insectoid"   => Some(vec![184, 105,  45, 90, 116, 214]),
-        "Insectoids"  => Some(vec![184, 105,  45, 90, 116, 214, 159]),
-        "Nucleotid"   => Some(vec![189, 222, 213, 82, 122,  77, 111]),
-        "Nucleotids"  => Some(vec![189, 222, 213, 82, 122,  77, 105]),
-        "Rabbitoid"   => Some(vec![193,  29,  77, 68, 167,  77, 111]),
-        "Rabbitoids"  => Some(vec![193,  29,  77, 68, 167,  77, 105]),
-        "Silicanoid"  => Some(vec![194,  69,  77, 81, 103,  77, 111]),
-        "Silicanoids" => Some(vec![194,  69,  77, 81, 103,  77, 105]),
-        "Terran"      => Some(vec![195,  40, 129, 111]),
-        "Terrans"     => Some(vec![195,  40, 129, 105]),
-        _             => None,
+// ── Name encoding algorithm ───────────────────────────────────────────────────
+// Confirmed 2026-04-22 via Ghidra decompilation of FUN_1040_4880 (char code
+// lookup) and FUN_1040_45a0 (nibble packer) in stars.exe.  The lowercase code
+// table was extracted from the binary at file offset 0x10032e.
+
+const LOWERCASE_CODES: [u32; 26] = [
+    0x01, 0x4d, 0x5d, 0x6d, 0x02, 0x7d, 0x8d, 0x03, 0x04, 0x9d,
+    0xad, 0x05, 0xbd, 0x06, 0x07, 0xcd, 0xdd, 0x08, 0x09, 0x0a,
+    0xed, 0xfd, 0x0e, 0x1e, 0x2e, 0x3e,
+];
+
+fn char_code(b: u8) -> u32 {
+    match b {
+        0x20           => 0x00,
+        0x61..=0x7a    => LOWERCASE_CODES[(b - 0x61) as usize],
+        0x41..=0x50    => ((b - 0x41) as u32) << 4 | 0x0b,
+        0x51..=0x5a    => ((b - 0x51) as u32) << 4 | 0x0c,
+        0x30..=0x35    => ((b - 0x26) as u32) << 4 | 0x0c,
+        0x36..=0x39    => ((b - 0x36) as u32) << 4 | 0x0d,
+        _              => ((b as u32) << 4) | 0x0f,
     }
 }
 
-/// Encode a name to raw bytes for the name section.
-///
-/// Known names use their confirmed preset byte sequence.  Unknown names fall
-/// back to char+111 encoding (min 8 bytes) — this is a best-effort path that
-/// has NOT been oracle-confirmed to display correctly in the original Stars!
-/// game.  The original game stores all names as preset keys; the fallback may
-/// produce a garbled race name in Stars! display while leaving mechanics intact.
-fn encode_name_bytes(name: &str) -> Vec<u8> {
-    if let Some(bytes) = preset_bytes(name) {
-        return bytes;
+fn encode_name_key(name: &str) -> Vec<u8> {
+    let mut nibbles: Vec<u8> = Vec::new();
+    for b in name.bytes() {
+        let mut code = char_code(b);
+        let n = if code < 0xb { 1 } else if (code & 0xf) == 0xf { 3 } else { 2 };
+        for _ in 0..n {
+            nibbles.push((code & 0xf) as u8);
+            code >>= 4;
+        }
     }
-    let mut bytes: Vec<u8> = name.bytes().map(|b| b.wrapping_add(111)).collect();
-    while bytes.len() < 8 {
-        bytes.push(32u8.wrapping_add(111)); // pad with encoded space
+    if nibbles.len() % 2 != 0 {
+        nibbles.push(0xf);
     }
-    bytes
+    nibbles.chunks(2).map(|c| (c[0] << 4) | c[1]).collect()
 }
 
 /// Build the name section starting at payload offset 112.
 ///
 /// Layout:
-///   [0]          : 0x00 constant
-///   [1]          : singular marker (= len of singular data bytes)
-///   [2..2+marker]: singular data bytes
-///   [2+marker]   : plural marker (0 = absent; present otherwise)
+///   [0]              : 0x00 constant
+///   [1]              : singular key length
+///   [2..2+sing_len]  : singular key bytes (nibble-packed encoded name)
+///   [2+sing_len]     : plural key length (0 = absent; r1_to_json defaults to singular+'s')
 ///   …
 ///
 /// The plural is always written explicitly unless plural_name is empty.
 fn encode_name_section(singular: &str, plural: &str) -> Vec<u8> {
     let mut section = vec![0u8]; // constant 0 at payload[112]
 
-    let s_bytes = encode_name_bytes(singular);
+    let s_bytes = encode_name_key(singular);
     section.push(s_bytes.len() as u8);
     section.extend_from_slice(&s_bytes);
 
     if plural.is_empty() {
         section.push(0u8); // no plural; r1_to_json fallback will append 's'
     } else {
-        let p_bytes = encode_name_bytes(plural);
+        let p_bytes = encode_name_key(plural);
         section.push(p_bytes.len() as u8);
         section.extend_from_slice(&p_bytes);
     }
