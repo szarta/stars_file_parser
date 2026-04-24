@@ -904,6 +904,18 @@ fn main() {
         process::exit(1);
     });
 
+    // Active player index is encoded in the filename: Game.mN  →  N-1.
+    // We use it to disambiguate which type-6 PlayerBlock is the active
+    // player's own (when the file holds blocks for multiple players).
+    // Falls back to None if the filename doesn't match the .mN pattern,
+    // in which case the parser uses the first ≥32-byte block.
+    let active_player_id: Option<u8> = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .and_then(|s| s.strip_prefix('m'))
+        .and_then(|s| s.parse::<u8>().ok())
+        .map(|n| n.saturating_sub(1));
+
     let mut year: u32 = 2400;
     let mut homeworld_planet_idx: Option<u16> = None;
     let mut planet_count: Option<u16> = None;
@@ -924,7 +936,18 @@ fn main() {
                 }
             }
             6 => {
-                if homeworld_planet_idx.is_none() {
+                // A .mN file may contain one type-6 PlayerBlock per known
+                // player (own + any whose race has been learned via
+                // espionage / scoreboard).  Each block's first byte is the
+                // 0-indexed player ID.  Active player's own block also has
+                // payload ≥ 32 bytes (tech at b26-31, race spec at b16-81).
+                if rec.payload.is_empty() || rec.payload.len() < 32 { continue; }
+                let block_pid = rec.payload[0];
+                let take = match active_player_id {
+                    Some(active) => block_pid == active,
+                    None         => homeworld_planet_idx.is_none(),
+                };
+                if take {
                     let (hw_idx, pc, t, r) = decode_type6(&rec.payload);
                     homeworld_planet_idx = hw_idx;
                     planet_count         = pc;
