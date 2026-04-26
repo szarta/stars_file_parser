@@ -9,6 +9,16 @@
 //
 // After the type-8 record is parsed, all subsequent records are decrypted
 // using the LCG state derived from the type-8 payload.
+//
+// Type-8 payload layout (16 bytes; partially decoded):
+//   bytes  0–9 : magic / fingerprint (constant across a session)
+//   bytes 10–11: turn counter — LE u16, increments by 1 per host generation
+//                  (game year = 2400 + turn_count).  Confirmed against .hst
+//                  by running `stars.exe -gN` and observing the word advance
+//                  by exactly N (R5.2, 2026-04-24).  Same offset works for
+//                  .m1–.m16 player turn files.
+//   bytes 12–13: LCG seed word (decrypts the rest of the file)
+//   bytes 14–15: pre-advance derivation bytes
 
 use crate::cipher::{decrypt, derive_pre_advance, derive_seeds, LcgState};
 
@@ -75,4 +85,20 @@ pub fn first_payload_of_type(records: &[Record], rtype: u16) -> Option<&[u8]> {
     records.iter()
         .find(|r| r.rtype == rtype)
         .map(|r| r.payload.as_slice())
+}
+
+/// Read the turn counter from the type-8 file header.
+///
+/// The turn counter lives at payload offsets 10–11 (LE u16) and increments by
+/// exactly 1 each time the host generates a turn.  Returns `None` if no type-8
+/// record is present or its payload is shorter than 12 bytes.
+pub fn turn_count(records: &[Record]) -> Option<u16> {
+    let p = first_payload_of_type(records, 8)?;
+    if p.len() < 12 { return None; }
+    Some(u16::from_le_bytes([p[10], p[11]]))
+}
+
+/// Game year derived from the turn counter (2400 + turn_count).
+pub fn game_year(records: &[Record]) -> Option<u32> {
+    turn_count(records).map(|t| 2400 + t as u32)
 }

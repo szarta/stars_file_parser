@@ -7,6 +7,7 @@
 pub mod cipher;
 pub mod records;
 pub mod race;
+pub mod name;
 pub mod universe;
 pub mod gamedef;
 pub mod advantage_points;

@@ -27,7 +27,7 @@
 use std::{env, path::Path, process};
 
 use serde::Serialize;
-use stars_file_parser::records::parse_file;
+use stars_file_parser::records::{game_year, parse_file};
 
 // ── Output types ─────────────────────────────────────────────────────────────
 
@@ -193,23 +193,14 @@ fn main() {
         process::exit(1);
     });
 
-    let mut year: u32 = 2400;
+    let year = game_year(&records).unwrap_or(2400);
     let mut planets: Vec<Planet> = Vec::new();
 
     for rec in &records {
-        match rec.rtype {
-            8 => {
-                if rec.payload.len() >= 12 {
-                    let turn_raw = u16::from_le_bytes([rec.payload[10], rec.payload[11]]);
-                    year = 2400 + turn_raw as u32;
-                }
+        if rec.rtype == 13 {
+            if let Some(p) = decode_type13(&rec.payload) {
+                planets.push(p);
             }
-            13 => {
-                if let Some(p) = decode_type13(&rec.payload) {
-                    planets.push(p);
-                }
-            }
-            _ => {}
         }
     }
 

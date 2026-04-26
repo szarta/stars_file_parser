@@ -14,112 +14,10 @@
 use std::{env, path::Path, process};
 
 use stars_file_parser::{
+    name::decode_names,
     race::race_from_payload,
     records::{first_payload_of_type, parse_file},
 };
-
-// ── Name encoding algorithm ───────────────────────────────────────────────────
-// Confirmed 2026-04-22 via Ghidra decompilation of FUN_1070_551c,
-// FUN_1040_45a0, and FUN_1040_4880 in stars.exe.
-//
-// All names (dropdown presets and user-typed) use the same nibble-packing
-// algorithm.  Each character maps to a code; codes are nibble-packed
-// high-nibble-first; odd nibble counts get a trailing 0xF pad nibble.
-//
-// Decoding: read nibble pairs from the key bytes to recover the original text.
-
-fn decode_name_key(data: &[u8]) -> String {
-    // Expand bytes to nibbles (high nibble first).
-    let mut nib: Vec<u8> = Vec::with_capacity(data.len() * 2);
-    for &b in data {
-        nib.push(b >> 4);
-        nib.push(b & 0xf);
-    }
-
-    // Map second nibble in the 'd' group (n2 4..=15) to lowercase letters.
-    const D_GROUP: [char; 12] = ['b','c','d','f','g','j','k','m','p','q','u','v'];
-    const E_GROUP: [char;  4] = ['w','x','y','z'];
-    // Map code 0..=10 to characters (0=space, 1=a, 2=e, ..., 10=t).
-    const ONE_NIB: [char; 11] = [' ','a','e','h','i','l','n','o','r','s','t'];
-
-    let mut result = String::new();
-    let mut i = 0usize;
-    while i < nib.len() {
-        let n1 = nib[i]; i += 1;
-        match n1 {
-            0..=10 => result.push(ONE_NIB[n1 as usize]),
-            0xb => {
-                let n2 = if i < nib.len() { nib[i] } else { 0xf }; i += 1;
-                if n2 == 0xf { break; }
-                result.push(char::from(0x41 + n2));    // A–P
-            }
-            0xc => {
-                let n2 = if i < nib.len() { nib[i] } else { 0xf }; i += 1;
-                if n2 == 0xf { break; }
-                if n2 <= 9 { result.push(char::from(0x51 + n2)); }  // Q–Z
-                else       { result.push(char::from(0x30 + n2 - 10)); } // 0–5
-            }
-            0xd => {
-                let n2 = if i < nib.len() { nib[i] } else { 0xf }; i += 1;
-                if n2 == 0xf { break; }
-                if n2 <= 3 { result.push(char::from(0x36 + n2)); }  // 6–9
-                else if (n2 as usize) - 4 < D_GROUP.len() {
-                    result.push(D_GROUP[(n2 as usize) - 4]);
-                }
-            }
-            0xe => {
-                let n2 = if i < nib.len() { nib[i] } else { 0xf }; i += 1;
-                if n2 == 0xf { break; }
-                if (n2 as usize) < E_GROUP.len() { result.push(E_GROUP[n2 as usize]); }
-            }
-            0xf => {
-                // 3-nibble sequence or trailing pad.
-                if i + 1 < nib.len() {
-                    let n2 = nib[i]; let n3 = nib[i + 1]; i += 2;
-                    if n3 == 0xf { break; }
-                    if let Some(c) = char::from_u32(((n3 as u32) << 4) | (n2 as u32)) {
-                        result.push(c);
-                    }
-                } else { break; }
-            }
-            _ => {}
-        }
-    }
-    result
-}
-
-// ── Name section decoder ─────────────────────────────────────────────────────
-// Layout at payload[112..]:
-//   [0]        : 0x00 constant
-//   [1]        : singular key length
-//   [2..2+n]   : singular key bytes (nibble-packed encoded name)
-//   [2+n]      : plural key length (0 = absent; importer defaults to singular+'s')
-//   …
-
-fn decode_name_block(payload: &[u8], start: usize) -> Option<(String, usize)> {
-    if start >= payload.len() { return None; }
-    let key_len = payload[start] as usize;
-    if key_len == 0 { return None; }
-    let data_end = (start + 1 + key_len).min(payload.len());
-    let data = &payload[start + 1..data_end];
-    Some((decode_name_key(data), start + 1 + key_len))
-}
-
-fn decode_names(payload: &[u8]) -> (String, String) {
-    let base = 112;
-    if payload.len() <= base + 1 { return (String::new(), String::new()); }
-
-    let (singular, plural_start) = match decode_name_block(payload, base + 1) {
-        Some(pair) => pair,
-        None       => return (String::new(), String::new()),
-    };
-
-    let plural = decode_name_block(payload, plural_start)
-        .map(|(n, _)| n)
-        .unwrap_or_else(|| format!("{singular}s"));
-
-    (singular, plural)
-}
 
 // ── main ─────────────────────────────────────────────────────────────────────
 
@@ -165,4 +63,80 @@ fn main() {
     });
 
     println!("{json}");
+}
+
+#[cfg(test)]
+mod tests {
+    use stars_file_parser::name::decode_name_key;
+
+    /// Encoder mirroring `_char_code` + `encode_name_key` in
+    /// `stars-reborn-research/reverse-engineering/scripts/analyze_r1.py`.
+    /// Used only here to round-trip the decoder.
+    fn encode(name: &str) -> Vec<u8> {
+        fn char_code(c: char) -> u32 {
+            let o = c as u32;
+            if o == 0x20 { return 0x00; }
+            if (0x61..=0x7a).contains(&o) {
+                // lowercase letters
+                let lower = [
+                    ('a', 0x01u32), ('b', 0x4d), ('c', 0x5d), ('d', 0x6d), ('e', 0x02),
+                    ('f', 0x7d),    ('g', 0x8d), ('h', 0x03), ('i', 0x04), ('j', 0x9d),
+                    ('k', 0xad),    ('l', 0x05), ('m', 0xbd), ('n', 0x06), ('o', 0x07),
+                    ('p', 0xcd),    ('q', 0xdd), ('r', 0x08), ('s', 0x09), ('t', 0x0a),
+                    ('u', 0xed),    ('v', 0xfd), ('w', 0x0e), ('x', 0x1e), ('y', 0x2e),
+                    ('z', 0x3e),
+                ];
+                return lower.iter().find(|(ch, _)| *ch == c).map(|&(_, v)| v).unwrap();
+            }
+            if (0x41..=0x50).contains(&o) { return ((o - 0x41) << 4) | 0x0b; }
+            if (0x51..=0x5a).contains(&o) { return ((o - 0x51) << 4) | 0x0c; }
+            if (0x30..=0x35).contains(&o) { return ((o - 0x26) << 4) | 0x0c; }
+            if (0x36..=0x39).contains(&o) { return ((o - 0x36) << 4) | 0x0d; }
+            (o << 4) | 0x0f
+        }
+        let mut nib: Vec<u8> = Vec::new();
+        for ch in name.chars() {
+            let mut code = char_code(ch);
+            let n = if code < 0xb { 1 } else if (code & 0xf) == 0xf { 3 } else { 2 };
+            for _ in 0..n {
+                nib.push((code & 0xf) as u8);
+                code >>= 4;
+            }
+        }
+        if nib.len() % 2 == 1 { nib.push(0xf); }
+        nib.chunks(2).map(|c| (c[0] << 4) | c[1]).collect()
+    }
+
+    fn round_trip(name: &str) {
+        let bs = encode(name);
+        let back = decode_name_key(&bs);
+        assert_eq!(back, name, "round-trip failed: encoded={bs:02x?}");
+    }
+
+    #[test]
+    fn round_trip_24_ai_race_names_and_dropdowns() {
+        let names = [
+            // dropdown presets
+            "Humanoid", "Antetheral", "Insectoid", "Nucleotid", "Rabbitoid", "Silicanoid",
+            // 24 AI race names
+            "American", "Berserker", "Bulushi", "Cleaver", "Crusher", "Eagle", "Felite",
+            "Ferret", "Golem", "Hawk", "Hicardi", "Hooveron", "House Cat", "Kurkonian",
+            "Loraxoid", "Mensoid", "Nairnian", "Nee", "Nulon", "Picardi", "Rush'n",
+            "Tritizoid", "Ubert", "Valadiac",
+        ];
+        for n in names { round_trip(n); }
+    }
+
+    /// Regression coverage for the bug fixed alongside this test:
+    /// names containing 'P', '5', or 'v' encode their N2 nibble as 0xf and
+    /// previously caused the decoder to treat 0xf as the trailing pad.
+    #[test]
+    fn round_trip_n2_eq_pad_chars() {
+        round_trip("P");
+        round_trip("5");
+        round_trip("v");
+        round_trip("Pv");
+        round_trip("Pickv");
+        round_trip("5v");
+    }
 }

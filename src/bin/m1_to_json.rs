@@ -67,7 +67,7 @@
 use std::{env, path::Path, process};
 
 use serde::Serialize;
-use stars_file_parser::{race::{race_from_payload, Race}, records::parse_file};
+use stars_file_parser::{name::decode_names, race::{race_from_payload, Race}, records::{game_year, parse_file}};
 
 // ── Output types ─────────────────────────────────────────────────────────────
 
@@ -167,11 +167,12 @@ struct PlayerState {
     /// Biology tech level — type-6 byte 31 (confirmed: IT=0, JOAT=3).
     tech_biology: Option<u8>,
 
-    /// Race design parameters from type-6 bytes 16-81.
-    ///
-    /// Bytes 16-81 have IDENTICAL layout in both .r1 and .m type-6 payloads
-    /// (confirmed 2026-04-13, R0.9).  name/plural_name/icon_index are left
-    /// empty/zero because their encoding differs from .r1 files.
+    /// Race design parameters from type-6 bytes 16-81 plus name/plural at
+    /// bytes 112+.  Bytes 16-81 have IDENTICAL layout in .r1 and .m type-6
+    /// (confirmed 2026-04-13, R0.9); the name section at offset 112+ is also
+    /// identical (confirmed 2026-04-25 via the all-human-players collision
+    /// oracle).  `icon_index` is still left as 0 — its encoding diverges and
+    /// is not currently decoded for .m files.
     #[serde(skip_serializing_if = "Option::is_none")]
     race: Option<Race>,
 
@@ -410,7 +411,16 @@ fn decode_type6(p: &[u8]) -> (Option<u16>, Option<u16>, [Option<u8>; 6], Option<
         if p.len() > 30 { Some(p[30]) } else { None }, // electronics
         if p.len() > 31 { Some(p[31]) } else { None }, // biology
     ];
-    let race = race_from_payload(p).ok();
+    let race = race_from_payload(p).ok().map(|mut r| {
+        let (name, plural) = decode_names(p);
+        r.name = name;
+        r.plural_name = plural;
+        // Icon index encoding at byte 6 is the same in .r1 and .m type-6
+        // (confirmed 2026-04-25 via the same-icon-different-name oracle):
+        // bits 3-7 = (icon_0idx + 1) & 0x1F, bits 0-2 = 0b111.
+        r.icon_index = (((p[6] >> 3) as u32).wrapping_sub(1)) & 0x1F;
+        r
+    });
     (hw_idx, planet_count, techs, race)
 }
 
@@ -916,7 +926,7 @@ fn main() {
         .and_then(|s| s.parse::<u8>().ok())
         .map(|n| n.saturating_sub(1));
 
-    let mut year: u32 = 2400;
+    let year = game_year(&records).unwrap_or(2400);
     let mut homeworld_planet_idx: Option<u16> = None;
     let mut planet_count: Option<u16> = None;
     let mut techs: [Option<u8>; 6] = [None; 6];
@@ -929,12 +939,6 @@ fn main() {
 
     for rec in &records {
         match rec.rtype {
-            8 => {
-                if rec.payload.len() >= 12 {
-                    let turn_raw = u16::from_le_bytes([rec.payload[10], rec.payload[11]]);
-                    year = 2400 + turn_raw as u32;
-                }
-            }
             6 => {
                 // A .mN file may contain one type-6 PlayerBlock per known
                 // player (own + any whose race has been learned via

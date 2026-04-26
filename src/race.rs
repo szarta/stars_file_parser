@@ -10,9 +10,13 @@
 // of the type-6 PlayerBlock.  These bytes have IDENTICAL layout in both .r1
 // race files and .m player turn files (confirmed 2026-04-13 by cross-checking
 // humanoid/JOAT known values against .m1 type-6 decrypted output).  Name,
-// plural_name, and icon_index are NOT decoded here because their encoding
-// differs between the two file types; callers fill those in afterwards when
-// needed.
+// plural_name, and icon_index are NOT decoded here — callers should call
+// `crate::name::decode_names` for the name section at offset 112+ (identical
+// layout across .r1 and .m type-6, confirmed 2026-04-25 via the
+// all-human-players collision oracle), and decode `icon_index` directly from
+// payload byte 6 with the same formula used by `r1_to_json` (also identical
+// across file types, confirmed 2026-04-25 via the same-icon-different-name
+// oracle).
 
 use serde::{Deserialize, Serialize};
 
