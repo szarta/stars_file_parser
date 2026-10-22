@@ -109,12 +109,12 @@ impl Difficulty {
     pub fn from_words(diff_a: u16, diff_b: u16) -> Option<Self> {
         let diff_b_low = diff_b & 0xFF;
         match (diff_a, diff_b_low) {
-            (0, _)   => Some(Self::Unknown0),
-            (1, 4)   => Some(Self::EasyOrStandard),
-            (2, 4)   => Some(Self::Harder),
-            (2, 20)  => Some(Self::Expert),
-            (3, _)   => Some(Self::Unknown3),
-            _        => None,
+            (0, _) => Some(Self::Unknown0),
+            (1, 4) => Some(Self::EasyOrStandard),
+            (2, 4) => Some(Self::Harder),
+            (2, 20) => Some(Self::Expert),
+            (3, _) => Some(Self::Unknown3),
+            _ => None,
         }
     }
 }
@@ -143,24 +143,25 @@ pub struct UniverseParams {
 pub fn universe_from_type7_payload(p: &[u8]) -> Result<UniverseParams, String> {
     if p.len() < 18 {
         return Err(format!(
-            "type-7 payload too short: {} bytes (expected ≥18)", p.len()
+            "type-7 payload too short: {} bytes (expected ≥18)",
+            p.len()
         ));
     }
 
     let w = |i: usize| u16::from_le_bytes([p[i * 2], p[i * 2 + 1]]);
 
-    let size_idx    = w(2);
+    let size_idx = w(2);
     let density_idx = w(3);
-    let n_players   = w(4);
-    let planet_ct   = w(5);
-    let diff_a      = w(6);
-    let diff_b      = w(8);
+    let n_players = w(4);
+    let planet_ct = w(5);
+    let diff_a = w(6);
+    let diff_b = w(8);
 
     let map_size = MapSize::from_index(size_idx)
         .ok_or_else(|| format!("unknown map size index {size_idx}"))?;
 
-    let density        = XyDensity::from_index(density_idx);
-    let difficulty     = Difficulty::from_words(diff_a, diff_b);
+    let density = XyDensity::from_index(density_idx);
+    let difficulty = Difficulty::from_words(diff_a, diff_b);
     let galaxy_clumping = (diff_b & 0x100) != 0;
 
     Ok(UniverseParams {

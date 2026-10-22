@@ -1,7 +1,7 @@
 // dump_type16 — hex-dump all type-16 FleetBlock records from a .m1 file.
 // Usage: dump_type16 <file.m1>
-use std::{env, path::Path, process};
 use stars_file_parser::records::parse_file;
+use std::{env, path::Path, process};
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -13,7 +13,9 @@ fn main() {
     let records = parse_file(&bytes).unwrap();
     let mut idx = 0usize;
     for rec in &records {
-        if rec.rtype != 16 { continue; }
+        if rec.rtype != 16 {
+            continue;
+        }
         let p = &rec.payload;
         let fleet_idx = u16::from_le_bytes([p[0], p[1]]);
         print!("fleet={fleet_idx} len={} bytes: ", p.len());

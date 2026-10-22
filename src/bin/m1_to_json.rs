@@ -140,12 +140,12 @@ struct ResourceOp {
 ///   b16-17: fuel      (0,    action=0) ✓
 #[derive(Debug, Serialize)]
 struct TransportPayload {
-    ironium:   ResourceOp,
-    boranium:  ResourceOp,
+    ironium: ResourceOp,
+    boranium: ResourceOp,
     germanium: ResourceOp,
     /// Colonists, in units of 100 (same as population elsewhere in the format).
     colonists: ResourceOp,
-    fuel:      ResourceOp,
+    fuel: ResourceOp,
 }
 
 /// Player-visible state extracted from the .m1 file.
@@ -411,7 +411,7 @@ fn read_uint_le(p: &[u8], off: usize, width: usize) -> Option<u32> {
 ///   b30   : ElectronicsLevel  (IT=0, JOAT=3)
 ///   b31   : BiologyLevel      (IT=0, JOAT=3)
 fn decode_type6(p: &[u8]) -> (Option<u16>, Option<u16>, [Option<u8>; 6], Option<Race>) {
-    let hw_idx      = read_u16_le(p, 8);
+    let hw_idx = read_u16_le(p, 8);
     let planet_count = read_u16_le(p, 2);
     let techs = [
         if p.len() > 26 { Some(p[26]) } else { None }, // energy
@@ -439,17 +439,17 @@ fn decode_type13(p: &[u8]) -> Option<PlanetRecord> {
         return None;
     }
     let raw_word = u16::from_le_bytes([p[0], p[1]]);
-    let planet_index = raw_word & 0x7FF;   // low 11 bits
-    let owner_id = ((raw_word >> 11) & 0x1F) as u8;  // high 5 bits; 31=nobody
+    let planet_index = raw_word & 0x7FF; // low 11 bits
+    let owner_id = ((raw_word >> 11) & 0x1F) as u8; // high 5 bits; 31=nobody
 
     // b4 = DepletionLength: three 2-bit fields encoding the byte-width of each mineral's
     // depletion accumulator.  These bytes are inserted immediately after b4, before the
     // concentration bytes.  Confirmed 2026-04-17 via T1→T2 diff: T2 has depl=0x15 (1 byte
     // per mineral), shifting concentrations from b5→b8 and all downstream offsets by 3.
     let depl = if p.len() > 4 { p[4] } else { 0 };
-    let iron_dw  = ((depl >> 0) & 3) as usize;
+    let iron_dw = (depl & 3) as usize;
     let boran_dw = ((depl >> 2) & 3) as usize;
-    let germ_dw  = ((depl >> 4) & 3) as usize;
+    let germ_dw = ((depl >> 4) & 3) as usize;
     let depl_total = iron_dw + boran_dw + germ_dw;
 
     // Concentrations start at b5 + depl_total.
@@ -461,19 +461,39 @@ fn decode_type13(p: &[u8]) -> Option<PlanetRecord> {
         planet_index,
         owner_id,
         colonized,
-        conc_ironium:   if p.len() > cb     { Some(p[cb])     } else { None },
-        conc_boranium:  if p.len() > cb + 1 { Some(p[cb + 1]) } else { None },
-        conc_germanium: if p.len() > cb + 2 { Some(p[cb + 2]) } else { None },
-        gravity:        if p.len() > cb + 3 { Some(p[cb + 3]) } else { None },
-        temperature:    if p.len() > cb + 4 { Some(p[cb + 4]) } else { None },
-        radiation:      if p.len() > cb + 5 { Some(p[cb + 5]) } else { None },
-        surface_ironium:  None,
+        conc_ironium: if p.len() > cb { Some(p[cb]) } else { None },
+        conc_boranium: if p.len() > cb + 1 {
+            Some(p[cb + 1])
+        } else {
+            None
+        },
+        conc_germanium: if p.len() > cb + 2 {
+            Some(p[cb + 2])
+        } else {
+            None
+        },
+        gravity: if p.len() > cb + 3 {
+            Some(p[cb + 3])
+        } else {
+            None
+        },
+        temperature: if p.len() > cb + 4 {
+            Some(p[cb + 4])
+        } else {
+            None
+        },
+        radiation: if p.len() > cb + 5 {
+            Some(p[cb + 5])
+        } else {
+            None
+        },
+        surface_ironium: None,
         surface_boranium: None,
         surface_germanium: None,
-        population:       None,
-        mines:            None,
-        factories:        None,
-        defenses:         None,
+        population: None,
+        mines: None,
+        factories: None,
+        defenses: None,
     };
     // SurfaceLength byte sits at b13 + depl_total; data follows at b14 + depl_total.
     let surf_len_off = 13 + depl_total;
@@ -484,16 +504,20 @@ fn decode_type13(p: &[u8]) -> Option<PlanetRecord> {
     // SurfaceLength byte encodes four 2-bit widths (LSB-first):
     //   bits 0-1 = IroniumWidth, 2-3 = BoraniumWidth, 4-5 = GermaniumWidth, 6-7 = PopWidth
     let surf_len = p[surf_len_off];
-    let iron_w  = ((surf_len >> 0) & 3) as usize;
+    let iron_w = (surf_len & 3) as usize;
     let boran_w = ((surf_len >> 2) & 3) as usize;
-    let germ_w  = ((surf_len >> 4) & 3) as usize;
-    let pop_w   = ((surf_len >> 6) & 3) as usize;
+    let germ_w = ((surf_len >> 4) & 3) as usize;
+    let pop_w = ((surf_len >> 6) & 3) as usize;
 
     let mut off = 14 + depl_total;
-    let surface_ironium   = read_uint_le(p, off, iron_w);  off += iron_w;
-    let surface_boranium  = read_uint_le(p, off, boran_w); off += boran_w;
-    let surface_germanium = read_uint_le(p, off, germ_w);  off += germ_w;
-    let population        = read_uint_le(p, off, pop_w);   off += pop_w;
+    let surface_ironium = read_uint_le(p, off, iron_w);
+    off += iron_w;
+    let surface_boranium = read_uint_le(p, off, boran_w);
+    off += boran_w;
+    let surface_germanium = read_uint_le(p, off, germ_w);
+    off += germ_w;
+    let population = read_uint_le(p, off, pop_w);
+    off += pop_w;
 
     // Installations block: present when PlanetInfo bit 11 (Installations) is set.
     let planet_info = u16::from_le_bytes([p[2], p[3]]);
@@ -503,49 +527,62 @@ fn decode_type13(p: &[u8]) -> Option<PlanetRecord> {
     let mut defenses = None;
     if has_inst {
         off += 1; // ExcessPopulation (1 byte)
-        // Installations: 3 bytes, Mines in bits 0-11, Factories in bits 12-23.
+                  // Installations: 3 bytes, Mines in bits 0-11, Factories in bits 12-23.
         if off + 3 <= p.len() {
-            let raw = (p[off] as u32) | ((p[off+1] as u32) << 8) | ((p[off+2] as u32) << 16);
-            mines     = Some((raw & 0xFFF) as u16);
+            let raw = (p[off] as u32) | ((p[off + 1] as u32) << 8) | ((p[off + 2] as u32) << 16);
+            mines = Some((raw & 0xFFF) as u16);
             factories = Some(((raw >> 12) & 0xFFF) as u16);
             off += 3;
         }
         // Defenses: 2 bytes, low 12 bits = defenses count.
         if off + 2 <= p.len() {
-            let raw = (p[off] as u16) | ((p[off+1] as u16) << 8);
+            let raw = (p[off] as u16) | ((p[off + 1] as u16) << 8);
             defenses = Some(raw & 0xFFF);
         }
     }
 
     Some(PlanetRecord {
-        surface_ironium, surface_boranium, surface_germanium, population,
-        mines, factories, defenses,
+        surface_ironium,
+        surface_boranium,
+        surface_germanium,
+        population,
+        mines,
+        factories,
+        defenses,
         ..base
     })
 }
 
 fn decode_type16(p: &[u8]) -> Option<FleetRecord> {
-    if p.len() < 19 { return None; }
-    let orbit        = u16::from_le_bytes([p[6], p[7]]);
-    let cargo_bitmap0 = p[15];   // CargoLengthBitmap byte 0: bits 7-6=PopLen, 5-4=GermLen, …
-    let cargo_bitmap1 = p[16];   // CargoLengthBitmap byte 1: bits 1-0=FuelLen code
-    // Bit 6 of cargo_bitmap0 = low bit of PopLen: set when colonists are on board.
-    // TODO: bits 0-5 of cargo_bitmap0 encode IronLen, BoranLen, GermLen — not yet decoded;
-    //       assumed 0 (no mineral cargo) for current oracle data.
+    if p.len() < 19 {
+        return None;
+    }
+    let orbit = u16::from_le_bytes([p[6], p[7]]);
+    let cargo_bitmap0 = p[15]; // CargoLengthBitmap byte 0: bits 7-6=PopLen, 5-4=GermLen, …
+    let cargo_bitmap1 = p[16]; // CargoLengthBitmap byte 1: bits 1-0=FuelLen code
+                               // Bit 6 of cargo_bitmap0 = low bit of PopLen: set when colonists are on board.
+                               // TODO: bits 0-5 of cargo_bitmap0 encode IronLen, BoranLen, GermLen — not yet decoded;
+                               //       assumed 0 (no mineral cargo) for current oracle data.
     let has_colonists = (cargo_bitmap0 & 0x40) != 0;
 
     // Cargo path (colonists present): b17=population(1B), b18=fuel(1B), tail at b19+.
     // No-cargo path: fuel at b17 (1 or 2 bytes per cargo_bitmap1 bits 0-1), tail follows.
     let (fuel_mg, colonists_100, battle_plan_idx, waypoint_count) = if has_colonists {
-        let pop  = if p.len() > 17 { Some(p[17]) } else { None };
+        let pop = if p.len() > 17 { Some(p[17]) } else { None };
         let fuel = if p.len() > 18 { p[18] as u16 } else { 0 };
-        let bp   = if p.len() > 21 { Some(p[21]) } else { None };
-        let wps  = if p.len() > 22 { p[22] } else { 0 };
+        let bp = if p.len() > 21 { Some(p[21]) } else { None };
+        let wps = if p.len() > 22 { p[22] } else { 0 };
         (fuel, pop, bp, wps)
     } else {
         let fuel_len = (cargo_bitmap1 & 0x03) as usize; // 0→0B, 1→1B, 2→2B, 3→4B
         let fuel = match fuel_len {
-            1 => if p.len() > 17 { p[17] as u16 } else { 0 },
+            1 => {
+                if p.len() > 17 {
+                    p[17] as u16
+                } else {
+                    0
+                }
+            }
             _ => u16::from_le_bytes([
                 if p.len() > 17 { p[17] } else { 0 },
                 if p.len() > 18 { p[18] } else { 0 },
@@ -555,7 +592,10 @@ fn decode_type16(p: &[u8]) -> Option<FleetRecord> {
         // Offset after fuel = 17 + fuel_len (clamped to 2 max for 16-bit reads).
         let tail = 17 + fuel_len.min(2);
         let (bp, wps) = if p.len() > tail + 2 {
-            (Some(p[tail + 2]), if p.len() > tail + 3 { p[tail + 3] } else { 0 })
+            (
+                Some(p[tail + 2]),
+                if p.len() > tail + 3 { p[tail + 3] } else { 0 },
+            )
         } else {
             (None, if p.len() > tail + 2 { p[tail + 2] } else { 0 })
         };
@@ -563,13 +603,13 @@ fn decode_type16(p: &[u8]) -> Option<FleetRecord> {
     };
 
     Some(FleetRecord {
-        fleet_index:          (p[0] as u16) | (((p[1] & 1) as u16) << 8),  // 9-bit fleet ID
-        owner_id:             (p[1] >> 1) & 0x0F,  // b1 bits 1-4
-        orbit_planet_idx:     orbit,
-        en_route:             orbit == 65535,
-        x:                    i16::from_le_bytes([p[8],  p[9]]),
-        y:                    i16::from_le_bytes([p[10], p[11]]),
-        design_bitmask:       u16::from_le_bytes([p[12], p[13]]),
+        fleet_index: (p[0] as u16) | (((p[1] & 1) as u16) << 8), // 9-bit fleet ID
+        owner_id: (p[1] >> 1) & 0x0F,                            // b1 bits 1-4
+        orbit_planet_idx: orbit,
+        en_route: orbit == 65535,
+        x: i16::from_le_bytes([p[8], p[9]]),
+        y: i16::from_le_bytes([p[10], p[11]]),
+        design_bitmask: u16::from_le_bytes([p[12], p[13]]),
         first_slot_ship_count: p[14],
         cargo_bitmap0,
         cargo_bitmap1,
@@ -594,7 +634,9 @@ fn decode_resource_op(lo: u8, hi: u8) -> ResourceOp {
 /// Decode a type-19 or type-20 waypoint payload.
 /// `has_task_payload` is true for type-19 (b8-17 hold task parameters).
 fn decode_waypoint(p: &[u8], has_task_payload: bool) -> Option<WaypointRecord> {
-    if p.len() < 8 { return None; }
+    if p.len() < 8 {
+        return None;
+    }
     let b6 = p[6];
     let b7 = p[7];
     let task_type = b6 & 0xF;
@@ -602,21 +644,21 @@ fn decode_waypoint(p: &[u8], has_task_payload: bool) -> Option<WaypointRecord> {
     // Decode Transport payload from b8-17 when present.
     let transport_payload = if has_task_payload && task_type == 1 && p.len() >= 18 {
         Some(TransportPayload {
-            ironium:   decode_resource_op(p[8],  p[9]),
-            boranium:  decode_resource_op(p[10], p[11]),
+            ironium: decode_resource_op(p[8], p[9]),
+            boranium: decode_resource_op(p[10], p[11]),
             germanium: decode_resource_op(p[12], p[13]),
             colonists: decode_resource_op(p[14], p[15]),
-            fuel:      decode_resource_op(p[16], p[17]),
+            fuel: decode_resource_op(p[16], p[17]),
         })
     } else {
         None
     };
 
     Some(WaypointRecord {
-        x:                   i16::from_le_bytes([p[0], p[1]]),
-        y:                   i16::from_le_bytes([p[2], p[3]]),
-        planet_index:        i16::from_le_bytes([p[4], p[5]]),
-        warp_speed:          b6 >> 4,
+        x: i16::from_le_bytes([p[0], p[1]]),
+        y: i16::from_le_bytes([p[2], p[3]]),
+        planet_index: i16::from_le_bytes([p[4], p[5]]),
+        warp_speed: b6 >> 4,
         task_type,
         is_current_position: (b7 & 0x04) != 0,
         has_task_payload,
@@ -625,13 +667,15 @@ fn decode_waypoint(p: &[u8], has_task_payload: bool) -> Option<WaypointRecord> {
 }
 
 fn decode_type30(p: &[u8]) -> Option<BattlePlanRecord> {
-    if p.len() < 4 { return None; }
+    if p.len() < 4 {
+        return None;
+    }
     Some(BattlePlanRecord {
-        plan_id:          p[0],
-        tactic:           p[1],
-        primary_target:   p[2] & 0xF,
+        plan_id: p[0],
+        tactic: p[1],
+        primary_target: p[2] & 0xF,
         secondary_target: (p[2] >> 4) & 0xF,
-        attack_who:       p[3],
+        attack_who: p[3],
     })
 }
 
@@ -643,138 +687,294 @@ fn decode_type30(p: &[u8]) -> Option<BattlePlanRecord> {
 //   MiningRobot,MineLayer,Mechanical,Electrical,Shield,Scanner,Armor,Engine
 
 static ENGINE_NAMES: &[&str] = &[
-    "Settler's Delight", "Quick Jump 5", "Fuel Mizer", "Long Hump 6",
-    "Daddy Long Legs 7", "Alpha Drive 8", "Trans-Galactic Drive", "Interspace-10",
-    "Enigma Pulsar", "Trans-Star 10", "Radiating Hydro-Ram Scoop",
-    "Sub-Galactic Fuel Scoop", "Trans-Galactic Fuel Scoop",
-    "Trans-Galactic Super Scoop", "Trans-Galactic Mizer Scoop", "Galaxy Scoop",
+    "Settler's Delight",
+    "Quick Jump 5",
+    "Fuel Mizer",
+    "Long Hump 6",
+    "Daddy Long Legs 7",
+    "Alpha Drive 8",
+    "Trans-Galactic Drive",
+    "Interspace-10",
+    "Enigma Pulsar",
+    "Trans-Star 10",
+    "Radiating Hydro-Ram Scoop",
+    "Sub-Galactic Fuel Scoop",
+    "Trans-Galactic Fuel Scoop",
+    "Trans-Galactic Super Scoop",
+    "Trans-Galactic Mizer Scoop",
+    "Galaxy Scoop",
 ];
 static SCANNER_NAMES: &[&str] = &[
-    "Bat Scanner", "Rhino Scanner", "Mole Scanner", "DNA Scanner",
-    "Possum Scanner", "Pick Pocket Scanner", "Chameleon Scanner", "Ferret Scanner",
-    "Dolphin Scanner", "Gazelle Scanner", "RNA Scanner", "Cheetah Scanner",
-    "Elephant Scanner", "Eagle Eye Scanner", "Robber Baron Scanner", "Peerless Scanner",
+    "Bat Scanner",
+    "Rhino Scanner",
+    "Mole Scanner",
+    "DNA Scanner",
+    "Possum Scanner",
+    "Pick Pocket Scanner",
+    "Chameleon Scanner",
+    "Ferret Scanner",
+    "Dolphin Scanner",
+    "Gazelle Scanner",
+    "RNA Scanner",
+    "Cheetah Scanner",
+    "Elephant Scanner",
+    "Eagle Eye Scanner",
+    "Robber Baron Scanner",
+    "Peerless Scanner",
 ];
 static SHIELD_NAMES: &[&str] = &[
-    "Mole-skin Shield", "Cow-hide Shield", "Wolverine Diffuse Shield", "Croby Sharmor",
-    "Shadow Shield", "Bear Neutrino Barrier", "Langston Shell", "Gorilla Delagator",
-    "Elephant Hide Fortress", "Complete Phase Shield",
+    "Mole-skin Shield",
+    "Cow-hide Shield",
+    "Wolverine Diffuse Shield",
+    "Croby Sharmor",
+    "Shadow Shield",
+    "Bear Neutrino Barrier",
+    "Langston Shell",
+    "Gorilla Delagator",
+    "Elephant Hide Fortress",
+    "Complete Phase Shield",
 ];
 static ARMOR_NAMES: &[&str] = &[
-    "Tritanium", "Crobmnium", "Carbonic Armor", "Strobnium",
-    "Organic Armor", "Kelarium", "Fielded Kelarium", "Depleted Neutronium",
-    "Neutronium", "Mega Poly Shell", "Valanium", "Superlatanium",
+    "Tritanium",
+    "Crobmnium",
+    "Carbonic Armor",
+    "Strobnium",
+    "Organic Armor",
+    "Kelarium",
+    "Fielded Kelarium",
+    "Depleted Neutronium",
+    "Neutronium",
+    "Mega Poly Shell",
+    "Valanium",
+    "Superlatanium",
 ];
 static BEAMWEAPON_NAMES: &[&str] = &[
-    "Laser", "X-Ray Laser", "Mini Gun", "Yakimora Light Phaser",
-    "Blackjack", "Phaser Bazooka", "Pulsed Sapper", "Colloidal Phaser",
-    "Gatling Gun", "Mini Blaster", "Bludgeon", "Mark IV Blaster",
-    "Phased Sapper", "Heavy Blaster", "Gatling Neutrino Cannon", "Myopic Disruptor",
-    "Blunderbuss", "Disruptor", "Multi Contained Munition", "Syncro Sapper",
-    "Mega Disruptor", "Big Mutha Cannon", "Streaming Pulverizer", "Anti-Matter Pulverizer",
+    "Laser",
+    "X-Ray Laser",
+    "Mini Gun",
+    "Yakimora Light Phaser",
+    "Blackjack",
+    "Phaser Bazooka",
+    "Pulsed Sapper",
+    "Colloidal Phaser",
+    "Gatling Gun",
+    "Mini Blaster",
+    "Bludgeon",
+    "Mark IV Blaster",
+    "Phased Sapper",
+    "Heavy Blaster",
+    "Gatling Neutrino Cannon",
+    "Myopic Disruptor",
+    "Blunderbuss",
+    "Disruptor",
+    "Multi Contained Munition",
+    "Syncro Sapper",
+    "Mega Disruptor",
+    "Big Mutha Cannon",
+    "Streaming Pulverizer",
+    "Anti-Matter Pulverizer",
 ];
 static TORPEDO_NAMES: &[&str] = &[
-    "Alpha Torpedo", "Beta Torpedo", "Delta Torpedo", "Epsilon Torpedo",
-    "Rho Torpedo", "Upsilon Torpedo", "Omega Torpedo", "Anti Matter Torpedo",
-    "Jihad Missile", "Juggernaut Missile", "Doomsday Missile", "Armageddon Missile",
+    "Alpha Torpedo",
+    "Beta Torpedo",
+    "Delta Torpedo",
+    "Epsilon Torpedo",
+    "Rho Torpedo",
+    "Upsilon Torpedo",
+    "Omega Torpedo",
+    "Anti Matter Torpedo",
+    "Jihad Missile",
+    "Juggernaut Missile",
+    "Doomsday Missile",
+    "Armageddon Missile",
 ];
 static BOMB_NAMES: &[&str] = &[
-    "Lady Finger Bomb", "Black Cat Bomb", "M-70 Bomb", "M-80 Bomb",
-    "Cherry Bomb", "LBU-17 Bomb", "LBU-32 Bomb", "LBU-74 Bomb",
-    "Hush-a-Boom", "Retro Bomb", "Smart Bomb", "Neutron Bomb",
-    "Enriched Neutron Bomb", "Peerless Bomb", "Annihilator Bomb",
+    "Lady Finger Bomb",
+    "Black Cat Bomb",
+    "M-70 Bomb",
+    "M-80 Bomb",
+    "Cherry Bomb",
+    "LBU-17 Bomb",
+    "LBU-32 Bomb",
+    "LBU-74 Bomb",
+    "Hush-a-Boom",
+    "Retro Bomb",
+    "Smart Bomb",
+    "Neutron Bomb",
+    "Enriched Neutron Bomb",
+    "Peerless Bomb",
+    "Annihilator Bomb",
 ];
 static MININGROBOT_NAMES: &[&str] = &[
-    "Robo-Midget Miner", "Robo-Mini-Miner", "Robo-Miner", "Robo-Maxi-Miner",
-    "Robo-Super-Miner", "Robo-Ultra-Miner", "Alien Miner", "Orbital Adjuster",
+    "Robo-Midget Miner",
+    "Robo-Mini-Miner",
+    "Robo-Miner",
+    "Robo-Maxi-Miner",
+    "Robo-Super-Miner",
+    "Robo-Ultra-Miner",
+    "Alien Miner",
+    "Orbital Adjuster",
 ];
 static MINELAYER_NAMES: &[&str] = &[
-    "Mine Dispenser 40", "Mine Dispenser 50", "Mine Dispenser 80", "Mine Dispenser 130",
-    "Heavy Dispenser 50", "Heavy Dispenser 110", "Heavy Dispenser 200",
-    "Speed Trap 20", "Speed Trap 30", "Speed Trap 50",
+    "Mine Dispenser 40",
+    "Mine Dispenser 50",
+    "Mine Dispenser 80",
+    "Mine Dispenser 130",
+    "Heavy Dispenser 50",
+    "Heavy Dispenser 110",
+    "Heavy Dispenser 200",
+    "Speed Trap 20",
+    "Speed Trap 30",
+    "Speed Trap 50",
 ];
 static ORBITAL_NAMES: &[&str] = &[
-    "Stargate 100/250", "Stargate any/300", "Stargate 150/600", "Stargate 300/500",
-    "Stargate 100/any", "Stargate any/800", "Stargate any/any",
-    "Mass Driver 5", "Mass Driver 6", "Mass Driver 7",
-    "Super Driver 8", "Super Driver 9", "Ultra Driver 10",
-    "Ultra Driver 11", "Ultra Driver 12", "Ultra Driver 13",
+    "Stargate 100/250",
+    "Stargate any/300",
+    "Stargate 150/600",
+    "Stargate 300/500",
+    "Stargate 100/any",
+    "Stargate any/800",
+    "Stargate any/any",
+    "Mass Driver 5",
+    "Mass Driver 6",
+    "Mass Driver 7",
+    "Super Driver 8",
+    "Super Driver 9",
+    "Ultra Driver 10",
+    "Ultra Driver 11",
+    "Ultra Driver 12",
+    "Ultra Driver 13",
 ];
 static PLANETARY_NAMES: &[&str] = &[
-    "Viewer 50", "Viewer 90", "Scoper 150", "Scoper 220",
-    "Scoper 280", "Snooper 320X", "Snooper 400X", "Snooper 500X",
-    "Snooper 620X", "SDI", "Missile Battery", "Laser Battery",
-    "Planetary Shield", "Neutron Shield", "Genesis Device",
+    "Viewer 50",
+    "Viewer 90",
+    "Scoper 150",
+    "Scoper 220",
+    "Scoper 280",
+    "Snooper 320X",
+    "Snooper 400X",
+    "Snooper 500X",
+    "Snooper 620X",
+    "SDI",
+    "Missile Battery",
+    "Laser Battery",
+    "Planetary Shield",
+    "Neutron Shield",
+    "Genesis Device",
 ];
 static ELECTRICAL_NAMES: &[&str] = &[
-    "Transport Cloaking", "Stealth Cloak", "Super-Stealth Cloak", "Ultra-Stealth Cloak",
-    "Multi Function Pod", "Battle Computer", "Battle Super Computer", "Battle Nexus",
-    "Jammer 10", "Jammer 20", "Jammer 30", "Jammer 50",
-    "Energy Capacitor", "Flux Capacitor", "Energy Dampener", "Tachyon Detector",
+    "Transport Cloaking",
+    "Stealth Cloak",
+    "Super-Stealth Cloak",
+    "Ultra-Stealth Cloak",
+    "Multi Function Pod",
+    "Battle Computer",
+    "Battle Super Computer",
+    "Battle Nexus",
+    "Jammer 10",
+    "Jammer 20",
+    "Jammer 30",
+    "Jammer 50",
+    "Energy Capacitor",
+    "Flux Capacitor",
+    "Energy Dampener",
+    "Tachyon Detector",
     "Anti-matter Generator",
 ];
 static MECHANICAL_NAMES: &[&str] = &[
-    "Colonization Module", "Orbital Construction Module", "Cargo Pod", "Super Cargo Pod",
-    "Multi Cargo Pod", "Fuel Tank", "Super Fuel Tank", "Maneuvering Jet",
-    "Overthruster", "Jump Gate", "Beam Deflector",
+    "Colonization Module",
+    "Orbital Construction Module",
+    "Cargo Pod",
+    "Super Cargo Pod",
+    "Multi Cargo Pod",
+    "Fuel Tank",
+    "Super Fuel Tank",
+    "Maneuvering Jet",
+    "Overthruster",
+    "Jump Gate",
+    "Beam Deflector",
 ];
 
 fn component_name(category: u16, item_id: u8) -> &'static str {
     let id = item_id as usize;
     let table: &[&str] = match category {
-        1      => ENGINE_NAMES,
-        2      => SCANNER_NAMES,
-        4      => SHIELD_NAMES,
-        8      => ARMOR_NAMES,
-        0x10   => BEAMWEAPON_NAMES,
-        0x20   => TORPEDO_NAMES,
-        0x40   => BOMB_NAMES,
-        0x80   => MININGROBOT_NAMES,
-        0x100  => MINELAYER_NAMES,
-        0x200  => ORBITAL_NAMES,
-        0x400  => PLANETARY_NAMES,
-        0x800  => ELECTRICAL_NAMES,
+        1 => ENGINE_NAMES,
+        2 => SCANNER_NAMES,
+        4 => SHIELD_NAMES,
+        8 => ARMOR_NAMES,
+        0x10 => BEAMWEAPON_NAMES,
+        0x20 => TORPEDO_NAMES,
+        0x40 => BOMB_NAMES,
+        0x80 => MININGROBOT_NAMES,
+        0x100 => MINELAYER_NAMES,
+        0x200 => ORBITAL_NAMES,
+        0x400 => PLANETARY_NAMES,
+        0x800 => ELECTRICAL_NAMES,
         0x1000 => MECHANICAL_NAMES,
-        _      => return "?",
+        _ => return "?",
     };
     table.get(id).copied().unwrap_or("?")
 }
 
 fn category_name_str(category: u16) -> &'static str {
     match category {
-        1      => "Engine",
-        2      => "Scanner",
-        4      => "Shield",
-        8      => "Armor",
-        0x10   => "BeamWeapon",
-        0x20   => "Torpedo",
-        0x40   => "Bomb",
-        0x80   => "MiningRobot",
-        0x100  => "MineLayer",
-        0x200  => "Orbital",
-        0x400  => "Planetary",
-        0x800  => "Electrical",
+        1 => "Engine",
+        2 => "Scanner",
+        4 => "Shield",
+        8 => "Armor",
+        0x10 => "BeamWeapon",
+        0x20 => "Torpedo",
+        0x40 => "Bomb",
+        0x80 => "MiningRobot",
+        0x100 => "MineLayer",
+        0x200 => "Orbital",
+        0x400 => "Planetary",
+        0x800 => "Electrical",
         0x1000 => "Mechanical",
-        _      => "?",
+        _ => "?",
     }
 }
 
 fn hull_name_str(hull_id: u8) -> &'static str {
     match hull_id {
-        0  => "Small Freighter",  1  => "Medium Freighter", 2  => "Large Freighter",
-        3  => "Super Freighter",  4  => "Scout",            5  => "Frigate",
-        6  => "Destroyer",        7  => "Cruiser",          8  => "Battle Cruiser",
-        9  => "Battleship",       10 => "Dreadnought",      11 => "Privateer",
-        12 => "Rogue",            13 => "Galleon",          14 => "Mini-Colony Ship",
-        15 => "Colony Ship",      16 => "Mini Bomber",      17 => "B-17 Bomber",
-        18 => "Stealth Bomber",   19 => "B-52 Bomber",      20 => "Midget Miner",
-        21 => "Mini-Miner",       22 => "Miner",            23 => "Maxi-Miner",
-        24 => "Ultra-Miner",      25 => "Fuel Transport",   26 => "Super-Fuel Xport",
-        27 => "Mini Mine Layer",  28 => "Super Mine Layer", 29 => "Nubian",
-        30 => "Mini Morph",       31 => "Meta Morph",       32 => "Orbital Fort",
-        33 => "Space Dock",       34 => "Space Station",    35 => "Ultra Station",
+        0 => "Small Freighter",
+        1 => "Medium Freighter",
+        2 => "Large Freighter",
+        3 => "Super Freighter",
+        4 => "Scout",
+        5 => "Frigate",
+        6 => "Destroyer",
+        7 => "Cruiser",
+        8 => "Battle Cruiser",
+        9 => "Battleship",
+        10 => "Dreadnought",
+        11 => "Privateer",
+        12 => "Rogue",
+        13 => "Galleon",
+        14 => "Mini-Colony Ship",
+        15 => "Colony Ship",
+        16 => "Mini Bomber",
+        17 => "B-17 Bomber",
+        18 => "Stealth Bomber",
+        19 => "B-52 Bomber",
+        20 => "Midget Miner",
+        21 => "Mini-Miner",
+        22 => "Miner",
+        23 => "Maxi-Miner",
+        24 => "Ultra-Miner",
+        25 => "Fuel Transport",
+        26 => "Super-Fuel Xport",
+        27 => "Mini Mine Layer",
+        28 => "Super Mine Layer",
+        29 => "Nubian",
+        30 => "Mini Morph",
+        31 => "Meta Morph",
+        32 => "Orbital Fort",
+        33 => "Space Dock",
+        34 => "Space Station",
+        35 => "Ultra Station",
         36 => "Death Star",
-        _  => "?",
+        _ => "?",
     }
 }
 
@@ -788,38 +988,86 @@ fn hull_name_str(hull_id: u8) -> &'static str {
 ///   0xB-0xE → 2-nibble (prefix + index into one of four 16-char tables);
 ///   0xF → 2-nibble raw ASCII (lo nibble then hi nibble of the byte).
 fn decode_stars_name(data: &[u8]) -> String {
-    if data.is_empty() { return String::new(); }
+    if data.is_empty() {
+        return String::new();
+    }
     let name_len = data[0] as usize;
-    if data.len() < 1 + name_len { return String::new(); }
+    if data.len() < 1 + name_len {
+        return String::new();
+    }
     let encoded = &data[1..1 + name_len];
 
-    const ONE: [char; 11] = [' ','a','e','h','i','l','n','o','r','s','t'];
-    const BT:  [char; 16] = ['A','B','C','D','E','F','G','H','I','J','K','L','M','N','O','P'];
-    const CT:  [char; 16] = ['Q','R','S','T','U','V','W','X','Y','Z','0','1','2','3','4','5'];
-    const DT:  [char; 16] = ['6','7','8','9','b','c','d','f','g','j','k','m','p','q','u','v'];
-    const ET:  [char; 16] = ['w','x','y','z','+','-',',','!','.','?',':',';','\'','*','%','$'];
+    const ONE: [char; 11] = [' ', 'a', 'e', 'h', 'i', 'l', 'n', 'o', 'r', 's', 't'];
+    const BT: [char; 16] = [
+        'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P',
+    ];
+    const CT: [char; 16] = [
+        'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z', '0', '1', '2', '3', '4', '5',
+    ];
+    const DT: [char; 16] = [
+        '6', '7', '8', '9', 'b', 'c', 'd', 'f', 'g', 'j', 'k', 'm', 'p', 'q', 'u', 'v',
+    ];
+    const ET: [char; 16] = [
+        'w', 'x', 'y', 'z', '+', '-', ',', '!', '.', '?', ':', ';', '\'', '*', '%', '$',
+    ];
 
-    let nibs: Vec<u8> = encoded.iter().flat_map(|&b| [(b >> 4) & 0xF, b & 0xF]).collect();
+    let nibs: Vec<u8> = encoded
+        .iter()
+        .flat_map(|&b| [(b >> 4) & 0xF, b & 0xF])
+        .collect();
     let mut result = String::new();
     let mut i = 0;
     let limit = name_len * 2;
     while i < limit && i < nibs.len() {
         let n = nibs[i];
         match n {
-            0..=10 => { result.push(ONE[n as usize]); i += 1; }
-            11 => { i += 1; if i < nibs.len() { result.push(BT[nibs[i] as usize]); i += 1; } }
-            12 => { i += 1; if i < nibs.len() { result.push(CT[nibs[i] as usize]); i += 1; } }
-            13 => { i += 1; if i < nibs.len() { result.push(DT[nibs[i] as usize]); i += 1; } }
-            14 => { i += 1; if i < nibs.len() { result.push(ET[nibs[i] as usize]); i += 1; } }
+            0..=10 => {
+                result.push(ONE[n as usize]);
+                i += 1;
+            }
+            11 => {
+                i += 1;
+                if i < nibs.len() {
+                    result.push(BT[nibs[i] as usize]);
+                    i += 1;
+                }
+            }
+            12 => {
+                i += 1;
+                if i < nibs.len() {
+                    result.push(CT[nibs[i] as usize]);
+                    i += 1;
+                }
+            }
+            13 => {
+                i += 1;
+                if i < nibs.len() {
+                    result.push(DT[nibs[i] as usize]);
+                    i += 1;
+                }
+            }
+            14 => {
+                i += 1;
+                if i < nibs.len() {
+                    result.push(ET[nibs[i] as usize]);
+                    i += 1;
+                }
+            }
             15 => {
                 i += 1;
                 if i + 1 < nibs.len() {
-                    let lo = nibs[i] as u32; i += 1;
-                    let hi = nibs[i] as u32; i += 1;
-                    if let Some(c) = char::from_u32((lo << 4) | hi) { result.push(c); }
+                    let lo = nibs[i] as u32;
+                    i += 1;
+                    let hi = nibs[i] as u32;
+                    i += 1;
+                    if let Some(c) = char::from_u32((lo << 4) | hi) {
+                        result.push(c);
+                    }
                 }
             }
-            _ => { i += 1; }
+            _ => {
+                i += 1;
+            }
         }
     }
     result
@@ -859,33 +1107,49 @@ struct DesignRecord {
 
 /// Decode a type-26 DesignBlock payload.  Returns None for non-full-design records.
 fn decode_type26(p: &[u8]) -> Option<DesignRecord> {
-    if p.len() < 17 { return None; }
-    if (p[0] & 3) != 3 { return None; }
-    if (p[0] & 0x04) == 0 { return None; }
-    let is_starbase     = (p[1] & 0x40) != 0;
-    let design_number   = (p[1] & 0x3C) >> 2;
-    let hull_id         = p[2];
-    let pic             = p[3];
-    let armor           = u16::from_le_bytes([p[4], p[5]]);
-    let slot_count      = p[6] as usize;
-    let turn_designed   = u16::from_le_bytes([p[7], p[8]]);
-    let total_built     = u32::from_le_bytes([p[9], p[10], p[11], p[12]]);
+    if p.len() < 17 {
+        return None;
+    }
+    if (p[0] & 3) != 3 {
+        return None;
+    }
+    if (p[0] & 0x04) == 0 {
+        return None;
+    }
+    let is_starbase = (p[1] & 0x40) != 0;
+    let design_number = (p[1] & 0x3C) >> 2;
+    let hull_id = p[2];
+    let pic = p[3];
+    let armor = u16::from_le_bytes([p[4], p[5]]);
+    let slot_count = p[6] as usize;
+    let turn_designed = u16::from_le_bytes([p[7], p[8]]);
+    let total_built = u32::from_le_bytes([p[9], p[10], p[11], p[12]]);
     let total_remaining = u32::from_le_bytes([p[13], p[14], p[15], p[16]]);
     let slots_end = 17 + slot_count * 4;
-    if p.len() < slots_end { return None; }
+    if p.len() < slots_end {
+        return None;
+    }
     let mut slots = Vec::with_capacity(slot_count);
     for i in 0..slot_count {
         let off = 17 + i * 4;
         let category = u16::from_le_bytes([p[off], p[off + 1]]);
-        let item_id  = p[off + 2];
-        let count    = p[off + 3];
+        let item_id = p[off + 2];
+        let count = p[off + 3];
         let (category_name, component) = if count == 0 {
             (String::new(), String::new())
         } else {
-            (category_name_str(category).to_string(),
-             component_name(category, item_id).to_string())
+            (
+                category_name_str(category).to_string(),
+                component_name(category, item_id).to_string(),
+            )
         };
-        slots.push(DesignSlot { category, category_name, item_id, count, component });
+        slots.push(DesignSlot {
+            category,
+            category_name,
+            item_id,
+            count,
+            component,
+        });
     }
     let name = decode_stars_name(p.get(slots_end..).unwrap_or(&[]));
     Some(DesignRecord {
@@ -959,18 +1223,20 @@ fn main() {
                 // espionage / scoreboard).  Each block's first byte is the
                 // 0-indexed player ID.  Active player's own block also has
                 // payload ≥ 32 bytes (tech at b26-31, race spec at b16-81).
-                if rec.payload.is_empty() || rec.payload.len() < 32 { continue; }
+                if rec.payload.is_empty() || rec.payload.len() < 32 {
+                    continue;
+                }
                 let block_pid = rec.payload[0];
                 let take = match active_player_id {
                     Some(active) => block_pid == active,
-                    None         => homeworld_planet_idx.is_none(),
+                    None => homeworld_planet_idx.is_none(),
                 };
                 if take {
                     let (hw_idx, pc, t, r) = decode_type6(&rec.payload);
                     homeworld_planet_idx = hw_idx;
-                    planet_count         = pc;
+                    planet_count = pc;
                     techs = t;
-                    race  = r;
+                    race = r;
                 }
             }
             13 => {
@@ -1012,12 +1278,12 @@ fn main() {
         player: PlayerState {
             homeworld_planet_idx,
             planet_count,
-            tech_energy:       techs[0],
-            tech_weapons:      techs[1],
-            tech_propulsion:   techs[2],
+            tech_energy: techs[0],
+            tech_weapons: techs[1],
+            tech_propulsion: techs[2],
             tech_construction: techs[3],
-            tech_electronics:  techs[4],
-            tech_biology:      techs[5],
+            tech_electronics: techs[4],
+            tech_biology: techs[5],
             race,
             battle_plans,
         },

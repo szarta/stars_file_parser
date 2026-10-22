@@ -98,7 +98,10 @@ fn encode_hab_axis(axis: &HabAxis, is_grav: bool, is_temp: bool) -> (u8, u8, u8)
         (temp_to_index(min_f), temp_to_index(max_f))
     } else {
         // Radiation: direct 0–100 index.
-        (min_f.round().clamp(0.0, 100.0) as u8, max_f.round().clamp(0.0, 100.0) as u8)
+        (
+            min_f.round().clamp(0.0, 100.0) as u8,
+            max_f.round().clamp(0.0, 100.0) as u8,
+        )
     };
     let center_idx = ((min_idx as u16 + max_idx as u16) / 2) as u8;
     (center_idx, min_idx, max_idx)
@@ -110,10 +113,20 @@ fn encode_lrts(lrts: &[Lrt]) -> (u8, u8) {
     let mut word: u16 = 0;
     for lrt in lrts {
         let bit: u8 = match lrt {
-            Lrt::IFE  =>  0, Lrt::TT   =>  1, Lrt::ARM  =>  2, Lrt::ISB  =>  3,
-            Lrt::GR   =>  4, Lrt::UR   =>  5, Lrt::MA   =>  6, Lrt::NRE  =>  7,
-            Lrt::CE   =>  8, Lrt::OBRM =>  9, Lrt::NAS  => 10, Lrt::LSP  => 11,
-            Lrt::BET  => 12, Lrt::RS   => 13,
+            Lrt::IFE => 0,
+            Lrt::TT => 1,
+            Lrt::ARM => 2,
+            Lrt::ISB => 3,
+            Lrt::GR => 4,
+            Lrt::UR => 5,
+            Lrt::MA => 6,
+            Lrt::NRE => 7,
+            Lrt::CE => 8,
+            Lrt::OBRM => 9,
+            Lrt::NAS => 10,
+            Lrt::LSP => 11,
+            Lrt::BET => 12,
+            Lrt::RS => 13,
         };
         word |= 1 << bit;
     }
@@ -123,9 +136,16 @@ fn encode_lrts(lrts: &[Lrt]) -> (u8, u8) {
 // ── PRT encoder ───────────────────────────────────────────────────────────────
 fn encode_prt(prt: &Prt) -> u8 {
     match prt {
-        Prt::He   => 0, Prt::Ss   => 1, Prt::Wm  => 2, Prt::Ca  => 3,
-        Prt::Is   => 4, Prt::Sd   => 5, Prt::Pp  => 6, Prt::It  => 7,
-        Prt::Ar   => 8, Prt::Joat => 9,
+        Prt::He => 0,
+        Prt::Ss => 1,
+        Prt::Wm => 2,
+        Prt::Ca => 3,
+        Prt::Is => 4,
+        Prt::Sd => 5,
+        Prt::Pp => 6,
+        Prt::It => 7,
+        Prt::Ar => 8,
+        Prt::Joat => 9,
     }
 }
 
@@ -133,8 +153,8 @@ fn encode_prt(prt: &Prt) -> u8 {
 fn encode_tech_cost(tc: &TechCost) -> u8 {
     match tc {
         TechCost::Expensive => 0,
-        TechCost::Normal    => 1,
-        TechCost::Cheap     => 2,
+        TechCost::Normal => 1,
+        TechCost::Cheap => 2,
     }
 }
 
@@ -144,20 +164,19 @@ fn encode_tech_cost(tc: &TechCost) -> u8 {
 // table was extracted from the binary at file offset 0x10032e.
 
 const LOWERCASE_CODES: [u32; 26] = [
-    0x01, 0x4d, 0x5d, 0x6d, 0x02, 0x7d, 0x8d, 0x03, 0x04, 0x9d,
-    0xad, 0x05, 0xbd, 0x06, 0x07, 0xcd, 0xdd, 0x08, 0x09, 0x0a,
-    0xed, 0xfd, 0x0e, 0x1e, 0x2e, 0x3e,
+    0x01, 0x4d, 0x5d, 0x6d, 0x02, 0x7d, 0x8d, 0x03, 0x04, 0x9d, 0xad, 0x05, 0xbd, 0x06, 0x07, 0xcd,
+    0xdd, 0x08, 0x09, 0x0a, 0xed, 0xfd, 0x0e, 0x1e, 0x2e, 0x3e,
 ];
 
 fn char_code(b: u8) -> u32 {
     match b {
-        0x20           => 0x00,
-        0x61..=0x7a    => LOWERCASE_CODES[(b - 0x61) as usize],
-        0x41..=0x50    => ((b - 0x41) as u32) << 4 | 0x0b,
-        0x51..=0x5a    => ((b - 0x51) as u32) << 4 | 0x0c,
-        0x30..=0x35    => ((b - 0x26) as u32) << 4 | 0x0c,
-        0x36..=0x39    => ((b - 0x36) as u32) << 4 | 0x0d,
-        _              => ((b as u32) << 4) | 0x0f,
+        0x20 => 0x00,
+        0x61..=0x7a => LOWERCASE_CODES[(b - 0x61) as usize],
+        0x41..=0x50 => ((b - 0x41) as u32) << 4 | 0x0b,
+        0x51..=0x5a => ((b - 0x51) as u32) << 4 | 0x0c,
+        0x30..=0x35 => ((b - 0x26) as u32) << 4 | 0x0c,
+        0x36..=0x39 => ((b - 0x36) as u32) << 4 | 0x0d,
+        _ => ((b as u32) << 4) | 0x0f,
     }
 }
 
@@ -165,13 +184,19 @@ fn encode_name_key(name: &str) -> Vec<u8> {
     let mut nibbles: Vec<u8> = Vec::new();
     for b in name.bytes() {
         let mut code = char_code(b);
-        let n = if code < 0xb { 1 } else if (code & 0xf) == 0xf { 3 } else { 2 };
+        let n = if code < 0xb {
+            1
+        } else if (code & 0xf) == 0xf {
+            3
+        } else {
+            2
+        };
         for _ in 0..n {
             nibbles.push((code & 0xf) as u8);
             code >>= 4;
         }
     }
-    if nibbles.len() % 2 != 0 {
+    if !nibbles.len().is_multiple_of(2) {
         nibbles.push(0xf);
     }
     nibbles.chunks(2).map(|c| (c[0] << 4) | c[1]).collect()
@@ -221,12 +246,18 @@ fn build_payload(race: &Race) -> Vec<u8> {
 
     // b16–18: hab axis centers (average of min and max indices).
     // b19–21: min indices. b22–24: max indices.
-    let (gc, gmin, gmax) = encode_hab_axis(&race.hab.gravity,     true,  false);
+    let (gc, gmin, gmax) = encode_hab_axis(&race.hab.gravity, true, false);
     let (tc, tmin, tmax) = encode_hab_axis(&race.hab.temperature, false, true);
-    let (rc, rmin, rmax) = encode_hab_axis(&race.hab.radiation,   false, false);
-    p[16] = gc;   p[17] = tc;   p[18] = rc;
-    p[19] = gmin; p[20] = tmin; p[21] = rmin;
-    p[22] = gmax; p[23] = tmax; p[24] = rmax;
+    let (rc, rmin, rmax) = encode_hab_axis(&race.hab.radiation, false, false);
+    p[16] = gc;
+    p[17] = tc;
+    p[18] = rc;
+    p[19] = gmin;
+    p[20] = tmin;
+    p[21] = rmin;
+    p[22] = gmax;
+    p[23] = tmax;
+    p[24] = rmax;
 
     // b25: growth rate.
     p[25] = race.economy.growth_rate as u8;
@@ -236,12 +267,12 @@ fn build_payload(race: &Race) -> Vec<u8> {
 
     // b62–68: economy fields.
     p[62] = (race.economy.resource_production / 100) as u8;
-    p[63] = race.economy.factory_production         as u8;
-    p[64] = race.economy.factory_cost               as u8;
+    p[63] = race.economy.factory_production as u8;
+    p[64] = race.economy.factory_cost as u8;
     p[65] = race.economy.colonists_operate_factories as u8;
-    p[66] = race.economy.mine_production            as u8;
-    p[67] = race.economy.mine_cost                  as u8;
-    p[68] = race.economy.colonists_operate_mines    as u8;
+    p[66] = race.economy.mine_production as u8;
+    p[67] = race.economy.mine_cost as u8;
+    p[68] = race.economy.colonists_operate_mines as u8;
     p[69] = race.leftover_spend.to_byte();
 
     // b70–75: research costs.
@@ -262,8 +293,12 @@ fn build_payload(race: &Race) -> Vec<u8> {
 
     // b81: flags. bit 7 = factory_cheap_germanium, bit 5 = expensive_tech_start_at_4.
     let mut flags = 0u8;
-    if race.economy.factory_cheap_germanium           { flags |= 0x80; }
-    if race.research_costs.expensive_tech_start_at_4  { flags |= 0x20; }
+    if race.economy.factory_cheap_germanium {
+        flags |= 0x80;
+    }
+    if race.research_costs.expensive_tech_start_at_4 {
+        flags |= 0x20;
+    }
     p[81] = flags;
 
     // b112+: name section.
@@ -286,7 +321,11 @@ const T0_C1: [u8; 4] = [0x9f, 0x00, 0x07, 0xaf];
 fn compute_type0(plain: &[u8]) -> [u8; 2] {
     let (mut xe, mut xo) = (0u8, 0u8);
     for (i, &b) in plain.iter().enumerate() {
-        if i % 2 == 0 { xe ^= b; } else { xo ^= b; }
+        if i % 2 == 0 {
+            xe ^= b;
+        } else {
+            xo ^= b;
+        }
     }
     let idx = plain.len() % 4;
     [xe ^ T0_C0[idx], xo ^ T0_C1[idx]]

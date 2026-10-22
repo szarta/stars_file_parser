@@ -45,7 +45,12 @@
 //     "output_xy": "Z:\\path\\to\\output.xy"
 //   }
 
-use std::{env, fs, io::{self, Write}, path::Path, process};
+use std::{
+    env, fs,
+    io::{self, Write},
+    path::Path,
+    process,
+};
 
 use stars_file_parser::gamedef::{to_def_bytes, GameDef};
 

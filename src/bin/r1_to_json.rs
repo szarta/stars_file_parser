@@ -51,11 +51,11 @@ fn main() {
 
     // Fill in the .r1-specific fields that race_from_payload leaves as defaults.
     let (name, plural_name) = decode_names(payload);
-    race.name        = name;
+    race.name = name;
     race.plural_name = plural_name;
     // payload[6]: bits 3-7 = icon_1idx mod 32, bits 0-2 = 0b111 (constant).
     // icon_0idx = ((payload[6] >> 3) - 1) & 0x1F  (0-indexed, 0-31)
-    race.icon_index  = (((payload[6] >> 3) as u32).wrapping_sub(1)) & 0x1F;
+    race.icon_index = (((payload[6] >> 3) as u32).wrapping_sub(1)) & 0x1F;
 
     let json = serde_json::to_string_pretty(&race).unwrap_or_else(|e| {
         eprintln!("serialization error: {e}");
@@ -75,35 +75,77 @@ mod tests {
     fn encode(name: &str) -> Vec<u8> {
         fn char_code(c: char) -> u32 {
             let o = c as u32;
-            if o == 0x20 { return 0x00; }
+            if o == 0x20 {
+                return 0x00;
+            }
             if (0x61..=0x7a).contains(&o) {
                 // lowercase letters
                 let lower = [
-                    ('a', 0x01u32), ('b', 0x4d), ('c', 0x5d), ('d', 0x6d), ('e', 0x02),
-                    ('f', 0x7d),    ('g', 0x8d), ('h', 0x03), ('i', 0x04), ('j', 0x9d),
-                    ('k', 0xad),    ('l', 0x05), ('m', 0xbd), ('n', 0x06), ('o', 0x07),
-                    ('p', 0xcd),    ('q', 0xdd), ('r', 0x08), ('s', 0x09), ('t', 0x0a),
-                    ('u', 0xed),    ('v', 0xfd), ('w', 0x0e), ('x', 0x1e), ('y', 0x2e),
+                    ('a', 0x01u32),
+                    ('b', 0x4d),
+                    ('c', 0x5d),
+                    ('d', 0x6d),
+                    ('e', 0x02),
+                    ('f', 0x7d),
+                    ('g', 0x8d),
+                    ('h', 0x03),
+                    ('i', 0x04),
+                    ('j', 0x9d),
+                    ('k', 0xad),
+                    ('l', 0x05),
+                    ('m', 0xbd),
+                    ('n', 0x06),
+                    ('o', 0x07),
+                    ('p', 0xcd),
+                    ('q', 0xdd),
+                    ('r', 0x08),
+                    ('s', 0x09),
+                    ('t', 0x0a),
+                    ('u', 0xed),
+                    ('v', 0xfd),
+                    ('w', 0x0e),
+                    ('x', 0x1e),
+                    ('y', 0x2e),
                     ('z', 0x3e),
                 ];
-                return lower.iter().find(|(ch, _)| *ch == c).map(|&(_, v)| v).unwrap();
+                return lower
+                    .iter()
+                    .find(|(ch, _)| *ch == c)
+                    .map(|&(_, v)| v)
+                    .unwrap();
             }
-            if (0x41..=0x50).contains(&o) { return ((o - 0x41) << 4) | 0x0b; }
-            if (0x51..=0x5a).contains(&o) { return ((o - 0x51) << 4) | 0x0c; }
-            if (0x30..=0x35).contains(&o) { return ((o - 0x26) << 4) | 0x0c; }
-            if (0x36..=0x39).contains(&o) { return ((o - 0x36) << 4) | 0x0d; }
+            if (0x41..=0x50).contains(&o) {
+                return ((o - 0x41) << 4) | 0x0b;
+            }
+            if (0x51..=0x5a).contains(&o) {
+                return ((o - 0x51) << 4) | 0x0c;
+            }
+            if (0x30..=0x35).contains(&o) {
+                return ((o - 0x26) << 4) | 0x0c;
+            }
+            if (0x36..=0x39).contains(&o) {
+                return ((o - 0x36) << 4) | 0x0d;
+            }
             (o << 4) | 0x0f
         }
         let mut nib: Vec<u8> = Vec::new();
         for ch in name.chars() {
             let mut code = char_code(ch);
-            let n = if code < 0xb { 1 } else if (code & 0xf) == 0xf { 3 } else { 2 };
+            let n = if code < 0xb {
+                1
+            } else if (code & 0xf) == 0xf {
+                3
+            } else {
+                2
+            };
             for _ in 0..n {
                 nib.push((code & 0xf) as u8);
                 code >>= 4;
             }
         }
-        if nib.len() % 2 == 1 { nib.push(0xf); }
+        if nib.len() % 2 == 1 {
+            nib.push(0xf);
+        }
         nib.chunks(2).map(|c| (c[0] << 4) | c[1]).collect()
     }
 
@@ -117,14 +159,41 @@ mod tests {
     fn round_trip_24_ai_race_names_and_dropdowns() {
         let names = [
             // dropdown presets
-            "Humanoid", "Antetheral", "Insectoid", "Nucleotid", "Rabbitoid", "Silicanoid",
+            "Humanoid",
+            "Antetheral",
+            "Insectoid",
+            "Nucleotid",
+            "Rabbitoid",
+            "Silicanoid",
             // 24 AI race names
-            "American", "Berserker", "Bulushi", "Cleaver", "Crusher", "Eagle", "Felite",
-            "Ferret", "Golem", "Hawk", "Hicardi", "Hooveron", "House Cat", "Kurkonian",
-            "Loraxoid", "Mensoid", "Nairnian", "Nee", "Nulon", "Picardi", "Rush'n",
-            "Tritizoid", "Ubert", "Valadiac",
+            "American",
+            "Berserker",
+            "Bulushi",
+            "Cleaver",
+            "Crusher",
+            "Eagle",
+            "Felite",
+            "Ferret",
+            "Golem",
+            "Hawk",
+            "Hicardi",
+            "Hooveron",
+            "House Cat",
+            "Kurkonian",
+            "Loraxoid",
+            "Mensoid",
+            "Nairnian",
+            "Nee",
+            "Nulon",
+            "Picardi",
+            "Rush'n",
+            "Tritizoid",
+            "Ubert",
+            "Valadiac",
         ];
-        for n in names { round_trip(n); }
+        for n in names {
+            round_trip(n);
+        }
     }
 
     /// Regression coverage for the bug fixed alongside this test:

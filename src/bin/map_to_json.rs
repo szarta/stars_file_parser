@@ -73,9 +73,9 @@ fn main() {
         }
     }
 
-    let idx_num  = headers["#"];
-    let idx_x    = headers["X"];
-    let idx_y    = headers["Y"];
+    let idx_num = headers["#"];
+    let idx_x = headers["X"];
+    let idx_y = headers["Y"];
     let idx_name = headers["Name"];
 
     let mut planets: Vec<UniversePlanet> = Vec::new();
@@ -89,9 +89,9 @@ fn main() {
         let get = |idx: usize| -> &str { fields.get(idx).copied().unwrap_or("").trim() };
 
         let number: u32 = get(idx_num).parse().unwrap_or(0);
-        let x: i32      = get(idx_x).parse().unwrap_or(0);
-        let y: i32      = get(idx_y).parse().unwrap_or(0);
-        let name        = get(idx_name).to_string();
+        let x: i32 = get(idx_x).parse().unwrap_or(0);
+        let y: i32 = get(idx_y).parse().unwrap_or(0);
+        let name = get(idx_name).to_string();
 
         planets.push(UniversePlanet { number, x, y, name });
     }

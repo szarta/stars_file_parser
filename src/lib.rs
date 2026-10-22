@@ -4,11 +4,11 @@
 // record-container format and L'Ecuyer LCG cipher.  This module provides those
 // shared building blocks so each tool in src/bin/ can focus on field decoding.
 
-pub mod cipher;
-pub mod records;
-pub mod race;
-pub mod name;
-pub mod universe;
-pub mod gamedef;
 pub mod advantage_points;
+pub mod cipher;
+pub mod gamedef;
 pub mod messages;
+pub mod name;
+pub mod race;
+pub mod records;
+pub mod universe;

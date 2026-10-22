@@ -62,7 +62,7 @@ pub fn template_table() -> &'static HashMap<u16, MessageTemplate> {
         for (k, v) in parsed {
             let id: u16 = k.parse().expect("messages.json keys must be u16");
             let args = v["args"].as_u64().unwrap_or(0) as u8;
-            let fmt  = v["fmt"].as_str().unwrap_or("").to_string();
+            let fmt = v["fmt"].as_str().unwrap_or("").to_string();
             out.insert(id, MessageTemplate { args, fmt });
         }
         out
@@ -103,18 +103,22 @@ pub struct EventsRecord {
 pub fn decode_events_block(payload: &[u8]) -> EventsRecord {
     let header_word = if payload.len() >= 2 {
         u16::from_le_bytes([payload[0], payload[1]])
-    } else { 0 };
+    } else {
+        0
+    };
     let header_loc = if payload.len() >= 4 {
         u16::from_le_bytes([payload[2], payload[3]])
-    } else { 0 };
-    let mid  = header_word & 0x3FF;
-    let tag  = header_word >> 10;
+    } else {
+        0
+    };
+    let mid = header_word & 0x3FF;
+    let tag = header_word >> 10;
     let tmpl = lookup(header_word);
     EventsRecord {
         header_msg_id: mid,
         header_msg_tag: tag,
         header_loc,
-        header_fmt:  tmpl.map(|t| t.fmt.clone()),
+        header_fmt: tmpl.map(|t| t.fmt.clone()),
         header_args: tmpl.map(|t| t.args),
         payload_hex: payload.iter().map(|b| format!("{b:02x}")).collect(),
     }

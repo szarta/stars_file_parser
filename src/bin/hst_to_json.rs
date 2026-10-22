@@ -108,68 +108,113 @@ fn decode_type13(p: &[u8]) -> Option<Planet> {
     if p.len() < 2 {
         return None;
     }
-    let raw_word    = u16::from_le_bytes([p[0], p[1]]);
+    let raw_word = u16::from_le_bytes([p[0], p[1]]);
     let planet_index = raw_word & 0x7FF;
-    let owner_id    = ((raw_word >> 11) & 0x1F) as u8;
+    let owner_id = ((raw_word >> 11) & 0x1F) as u8;
 
     // b4 = DepletionLength: three 2-bit fields encoding byte-widths of depletion
     // accumulators inserted before the concentration bytes.
-    let depl       = if p.len() > 4 { p[4] } else { 0 };
-    let iron_dw    = ((depl >> 0) & 3) as usize;
-    let boran_dw   = ((depl >> 2) & 3) as usize;
-    let germ_dw    = ((depl >> 4) & 3) as usize;
+    let depl = if p.len() > 4 { p[4] } else { 0 };
+    let iron_dw = (depl & 3) as usize;
+    let boran_dw = ((depl >> 2) & 3) as usize;
+    let germ_dw = ((depl >> 4) & 3) as usize;
     let depl_total = iron_dw + boran_dw + germ_dw;
 
-    let cb        = 5 + depl_total;
+    let cb = 5 + depl_total;
     let colonized = p.len() > 11 + depl_total;
 
-    let conc_ironium   = if p.len() > cb     { Some(p[cb])     } else { None };
-    let conc_boranium  = if p.len() > cb + 1 { Some(p[cb + 1]) } else { None };
-    let conc_germanium = if p.len() > cb + 2 { Some(p[cb + 2]) } else { None };
-    let gravity        = if p.len() > cb + 3 { Some(p[cb + 3]) } else { None };
-    let temperature    = if p.len() > cb + 4 { Some(p[cb + 4]) } else { None };
-    let radiation      = if p.len() > cb + 5 { Some(p[cb + 5]) } else { None };
+    let conc_ironium = if p.len() > cb { Some(p[cb]) } else { None };
+    let conc_boranium = if p.len() > cb + 1 {
+        Some(p[cb + 1])
+    } else {
+        None
+    };
+    let conc_germanium = if p.len() > cb + 2 {
+        Some(p[cb + 2])
+    } else {
+        None
+    };
+    let gravity = if p.len() > cb + 3 {
+        Some(p[cb + 3])
+    } else {
+        None
+    };
+    let temperature = if p.len() > cb + 4 {
+        Some(p[cb + 4])
+    } else {
+        None
+    };
+    let radiation = if p.len() > cb + 5 {
+        Some(p[cb + 5])
+    } else {
+        None
+    };
 
     if !colonized {
         return Some(Planet {
-            planet_index, owner_id,
-            conc_ironium, conc_boranium, conc_germanium,
-            gravity, temperature, radiation,
+            planet_index,
+            owner_id,
+            conc_ironium,
+            conc_boranium,
+            conc_germanium,
+            gravity,
+            temperature,
+            radiation,
             population: None,
-            surface_ironium: None, surface_boranium: None, surface_germanium: None,
+            surface_ironium: None,
+            surface_boranium: None,
+            surface_germanium: None,
         });
     }
 
     let surf_len_off = 13 + depl_total;
     if p.len() <= surf_len_off {
         return Some(Planet {
-            planet_index, owner_id,
-            conc_ironium, conc_boranium, conc_germanium,
-            gravity, temperature, radiation,
+            planet_index,
+            owner_id,
+            conc_ironium,
+            conc_boranium,
+            conc_germanium,
+            gravity,
+            temperature,
+            radiation,
             population: None,
-            surface_ironium: None, surface_boranium: None, surface_germanium: None,
+            surface_ironium: None,
+            surface_boranium: None,
+            surface_germanium: None,
         });
     }
 
     let surf_len = p[surf_len_off];
-    let iron_w   = ((surf_len >> 0) & 3) as usize;
-    let boran_w  = ((surf_len >> 2) & 3) as usize;
-    let germ_w   = ((surf_len >> 4) & 3) as usize;
-    let pop_w    = ((surf_len >> 6) & 3) as usize;
+    let iron_w = (surf_len & 3) as usize;
+    let boran_w = ((surf_len >> 2) & 3) as usize;
+    let germ_w = ((surf_len >> 4) & 3) as usize;
+    let pop_w = ((surf_len >> 6) & 3) as usize;
 
     let mut off = 14 + depl_total;
-    let surface_ironium   = read_uint_le(p, off, iron_w);  off += iron_w;
-    let surface_boranium  = read_uint_le(p, off, boran_w); off += boran_w;
-    let surface_germanium = read_uint_le(p, off, germ_w);  off += germ_w;
-    let population        = read_uint_le(p, off, pop_w);
+    let surface_ironium = read_uint_le(p, off, iron_w);
+    off += iron_w;
+    let surface_boranium = read_uint_le(p, off, boran_w);
+    off += boran_w;
+    let surface_germanium = read_uint_le(p, off, germ_w);
+    off += germ_w;
+    let population = read_uint_le(p, off, pop_w);
 
     let _ = (read_u16_le, off); // suppress unused warning
 
     Some(Planet {
-        planet_index, owner_id,
-        conc_ironium, conc_boranium, conc_germanium,
-        gravity, temperature, radiation,
-        population, surface_ironium, surface_boranium, surface_germanium,
+        planet_index,
+        owner_id,
+        conc_ironium,
+        conc_boranium,
+        conc_germanium,
+        gravity,
+        temperature,
+        radiation,
+        population,
+        surface_ironium,
+        surface_boranium,
+        surface_germanium,
     })
 }
 
@@ -205,7 +250,11 @@ fn main() {
     }
 
     let planet_count = planets.len();
-    let state = HostState { year, planet_count, planets };
+    let state = HostState {
+        year,
+        planet_count,
+        planets,
+    };
 
     let json = serde_json::to_string_pretty(&state).unwrap_or_else(|e| {
         eprintln!("serialization error: {e}");

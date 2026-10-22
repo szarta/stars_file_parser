@@ -56,7 +56,7 @@ impl Density {
         match self {
             Self::Sparse => 1,
             Self::Normal => 2,
-            Self::Dense  => 3,
+            Self::Dense => 3,
             Self::Packed => 4,
         }
     }
@@ -90,10 +90,10 @@ pub enum PlayerPositions {
 impl PlayerPositions {
     pub fn to_index(&self) -> u8 {
         match self {
-            Self::Close    => 0,
+            Self::Close => 0,
             Self::Moderate => 1,
-            Self::Farther  => 2,
-            Self::Distant  => 3,
+            Self::Farther => 2,
+            Self::Distant => 3,
         }
     }
 
@@ -123,7 +123,7 @@ pub struct UniverseSetup {
 // ── GameOptions ───────────────────────────────────────────────────────────────
 
 /// The seven boolean game-setup checkboxes in line 3 of the .def file.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct GameOptions {
     /// Begin all planets with maximum mineral concentrations.
     pub max_minerals: bool,
@@ -139,20 +139,6 @@ pub struct GameOptions {
     pub no_random_events: bool,
     /// Public scores visible to all players from turn 1.
     pub public_scores: bool,
-}
-
-impl Default for GameOptions {
-    fn default() -> Self {
-        Self {
-            max_minerals:       false,
-            slow_tech:          false,
-            bbs_play:           false,
-            galaxy_clumping:    false,
-            computer_alliances: false,
-            no_random_events:   false,
-            public_scores:      false,
-        }
-    }
 }
 
 // ── Player ────────────────────────────────────────────────────────────────────
@@ -234,13 +220,13 @@ pub struct VcTurns {
 /// enabled conditions a player must simultaneously satisfy to win.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VictoryConditions {
-    pub planets:         VcPlanets,
-    pub tech:            VcTech,
-    pub score:           VcScore,
+    pub planets: VcPlanets,
+    pub tech: VcTech,
+    pub score: VcScore,
     pub exceeds_nearest: VcExceedsNearest,
-    pub production:      VcProduction,
-    pub capital_ships:   VcCapitalShips,
-    pub turns:           VcTurns,
+    pub production: VcProduction,
+    pub capital_ships: VcCapitalShips,
+    pub turns: VcTurns,
     /// Number of enabled VCs a player must satisfy simultaneously to win (0–7).
     /// Use 1 to require only one condition; use the total count to require all.
     pub must_meet: u8,
@@ -255,11 +241,11 @@ pub struct VictoryConditions {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GameDef {
     pub game_name: String,
-    pub universe:  UniverseSetup,
-    pub options:   GameOptions,
+    pub universe: UniverseSetup,
+    pub options: GameOptions,
     /// Players in order; the number of elements is the NumPlayers value.
-    pub players:   Vec<Player>,
-    pub victory:   VictoryConditions,
+    pub players: Vec<Player>,
+    pub victory: VictoryConditions,
     /// Windows path where the game should write the output `.xy` file.
     pub output_xy: String,
 }
@@ -268,16 +254,20 @@ pub struct GameDef {
 
 fn map_size_index(s: &MapSize) -> u8 {
     match s {
-        MapSize::Tiny   => 0,
-        MapSize::Small  => 1,
+        MapSize::Tiny => 0,
+        MapSize::Small => 1,
         MapSize::Medium => 2,
-        MapSize::Large  => 3,
-        MapSize::Huge   => 4,
+        MapSize::Large => 3,
+        MapSize::Huge => 4,
     }
 }
 
 fn flag(b: bool) -> &'static str {
-    if b { "1" } else { "0" }
+    if b {
+        "1"
+    } else {
+        "0"
+    }
 }
 
 /// Serialise a `GameDef` to the bytes of a `.def` file with Windows CRLF

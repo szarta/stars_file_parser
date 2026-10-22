@@ -50,7 +50,6 @@ struct FleetDumpRecord {
     fuel: u32,
 
     // ── Rich-format fields (present only with NewReports=1 in [Misc] of stars.ini) ──
-
     /// Player number (1-based) that owns this fleet.
     #[serde(skip_serializing_if = "Option::is_none")]
     owner: Option<u32>,
@@ -174,11 +173,25 @@ fn main() {
         }
         let fields: Vec<&str> = line.split('\t').collect();
 
-        let (owner, eta, warp, mass_kt, cloak_pct,
-             scan_range, pen_scan_range, task,
-             mining_rate, sweep_rate, mine_laying_rate, terraform_rate,
-             ships_unarmed, ships_scout, ships_warship, ships_utility, ships_bomber) =
-        if is_rich {
+        let (
+            owner,
+            eta,
+            warp,
+            mass_kt,
+            cloak_pct,
+            scan_range,
+            pen_scan_range,
+            task,
+            mining_rate,
+            sweep_rate,
+            mine_laying_rate,
+            terraform_rate,
+            ships_unarmed,
+            ships_scout,
+            ships_warship,
+            ships_utility,
+            ships_bomber,
+        ) = if is_rich {
             (
                 Some(parse_u32(&col(&fields, &headers, "Owner"))),
                 Some(parse_u32(&col(&fields, &headers, "ETA"))),
@@ -199,33 +212,49 @@ fn main() {
                 Some(parse_u32(&col(&fields, &headers, "Bomber"))),
             )
         } else {
-            (None, None, None, None, None,
-             None, None, None,
-             None, None, None, None,
-             None, None, None, None, None)
+            (
+                None, None, None, None, None, None, None, None, None, None, None, None, None, None,
+                None, None, None,
+            )
         };
 
         fleets.push(FleetDumpRecord {
-            fleet_name:      col(&fields, &headers, "Fleet Name"),
-            x:               parse_i32(&col(&fields, &headers, "X")),
-            y:               parse_i32(&col(&fields, &headers, "Y")),
-            planet:          col(&fields, &headers, "Planet"),
-            destination:     col(&fields, &headers, "Destination"),
-            battle_plan:     col(&fields, &headers, "Battle Plan"),
-            ship_count:      parse_u32(&col(&fields, &headers, "Ship Cnt")),
-            cargo_iron:      parse_u32(&col(&fields, &headers, "Iron")),
-            cargo_bora:      parse_u32(&col(&fields, &headers, "Bora")),
-            cargo_germ:      parse_u32(&col(&fields, &headers, "Germ")),
+            fleet_name: col(&fields, &headers, "Fleet Name"),
+            x: parse_i32(&col(&fields, &headers, "X")),
+            y: parse_i32(&col(&fields, &headers, "Y")),
+            planet: col(&fields, &headers, "Planet"),
+            destination: col(&fields, &headers, "Destination"),
+            battle_plan: col(&fields, &headers, "Battle Plan"),
+            ship_count: parse_u32(&col(&fields, &headers, "Ship Cnt")),
+            cargo_iron: parse_u32(&col(&fields, &headers, "Iron")),
+            cargo_bora: parse_u32(&col(&fields, &headers, "Bora")),
+            cargo_germ: parse_u32(&col(&fields, &headers, "Germ")),
             cargo_colonists: parse_u32(&col(&fields, &headers, "Col")),
-            fuel:            parse_u32(&col(&fields, &headers, "Fuel")),
-            owner, eta, warp, mass_kt, cloak_pct,
-            scan_range, pen_scan_range, task,
-            mining_rate, sweep_rate, mine_laying_rate, terraform_rate,
-            ships_unarmed, ships_scout, ships_warship, ships_utility, ships_bomber,
+            fuel: parse_u32(&col(&fields, &headers, "Fuel")),
+            owner,
+            eta,
+            warp,
+            mass_kt,
+            cloak_pct,
+            scan_range,
+            pen_scan_range,
+            task,
+            mining_rate,
+            sweep_rate,
+            mine_laying_rate,
+            terraform_rate,
+            ships_unarmed,
+            ships_scout,
+            ships_warship,
+            ships_utility,
+            ships_bomber,
         });
     }
 
-    let dump = FleetDump { format: format_str, fleets };
+    let dump = FleetDump {
+        format: format_str,
+        fleets,
+    };
     let json = serde_json::to_string_pretty(&dump).unwrap_or_else(|e| {
         eprintln!("serialization error: {e}");
         process::exit(1);

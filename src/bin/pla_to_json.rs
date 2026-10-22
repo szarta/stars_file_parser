@@ -57,7 +57,6 @@ struct PlanetDumpRecord {
     resources: u32,
 
     // ── Rich-format fields (present only with NewReports=1 in [Misc] of stars.ini) ──
-
     /// Current gravity as string (e.g. "1.00g").
     #[serde(skip_serializing_if = "Option::is_none")]
     gravity: Option<String>,
@@ -115,7 +114,7 @@ struct PlanetDump {
     planets: Vec<PlanetDumpRecord>,
 }
 
-fn col<'a>(fields: &[&'a str], headers: &HashMap<&str, usize>, name: &str) -> String {
+fn col(fields: &[&str], headers: &HashMap<&str, usize>, name: &str) -> String {
     headers
         .get(name)
         .and_then(|&i| fields.get(i).copied())
@@ -182,13 +181,27 @@ fn main() {
         }
         let fields: Vec<&str> = line.split('\t').collect();
 
-        let value_pct     = parse_pct_i32(&col(&fields, &headers, "Value"));
-        let defense_pct   = parse_pct_f32(&col(&fields, &headers, "Def %"));
+        let value_pct = parse_pct_i32(&col(&fields, &headers, "Value"));
+        let defense_pct = parse_pct_f32(&col(&fields, &headers, "Def %"));
 
-        let (gravity, temperature, radiation,
-             gravity_orig, temperature_orig, radiation_orig,
-             terraformed_pct, capacity, scan_range, pen_scan_range,
-             driver, warp, route, gate_range, gate_mass, pct_damaged) = if is_rich {
+        let (
+            gravity,
+            temperature,
+            radiation,
+            gravity_orig,
+            temperature_orig,
+            radiation_orig,
+            terraformed_pct,
+            capacity,
+            scan_range,
+            pen_scan_range,
+            driver,
+            warp,
+            route,
+            gate_range,
+            gate_mass,
+            pct_damaged,
+        ) = if is_rich {
             (
                 Some(col(&fields, &headers, "Grav")),
                 Some(col(&fields, &headers, "Temp")),
@@ -208,39 +221,56 @@ fn main() {
                 Some(parse_u32(&col(&fields, &headers, "PctDmg"))),
             )
         } else {
-            (None, None, None, None, None, None,
-             None, None, None, None, None, None, None, None, None, None)
+            (
+                None, None, None, None, None, None, None, None, None, None, None, None, None, None,
+                None, None,
+            )
         };
 
         planets.push(PlanetDumpRecord {
-            planet_name:      col(&fields, &headers, "Planet Name"),
-            owner:            col(&fields, &headers, "Owner"),
-            starbase_type:    col(&fields, &headers, "Starbase Type"),
-            report_age:       parse_u32(&col(&fields, &headers, "Report Age")),
-            population:       parse_u32(&col(&fields, &headers, "Population")),
+            planet_name: col(&fields, &headers, "Planet Name"),
+            owner: col(&fields, &headers, "Owner"),
+            starbase_type: col(&fields, &headers, "Starbase Type"),
+            report_age: parse_u32(&col(&fields, &headers, "Report Age")),
+            population: parse_u32(&col(&fields, &headers, "Population")),
             value_pct,
             production_queue: col(&fields, &headers, "Production Queue"),
-            mines:            parse_u32(&col(&fields, &headers, "Mines")),
-            factories:        parse_u32(&col(&fields, &headers, "Factories")),
+            mines: parse_u32(&col(&fields, &headers, "Mines")),
+            factories: parse_u32(&col(&fields, &headers, "Factories")),
             defense_pct,
-            surface_iron:     parse_u32(&col(&fields, &headers, "S Iron")),
-            surface_bora:     parse_u32(&col(&fields, &headers, "S Bora")),
-            surface_germ:     parse_u32(&col(&fields, &headers, "S Germ")),
+            surface_iron: parse_u32(&col(&fields, &headers, "S Iron")),
+            surface_bora: parse_u32(&col(&fields, &headers, "S Bora")),
+            surface_germ: parse_u32(&col(&fields, &headers, "S Germ")),
             iron_mining_rate: parse_u32(&col(&fields, &headers, "Iron MR")),
             bora_mining_rate: parse_u32(&col(&fields, &headers, "Bora MR")),
             germ_mining_rate: parse_u32(&col(&fields, &headers, "Germ MR")),
             iron_mineral_conc: parse_u32(&col(&fields, &headers, "Iron MC")),
             bora_mineral_conc: parse_u32(&col(&fields, &headers, "Bora MC")),
             germ_mineral_conc: parse_u32(&col(&fields, &headers, "Germ MC")),
-            resources:        parse_u32(&col(&fields, &headers, "Resources")),
-            gravity, temperature, radiation,
-            gravity_orig, temperature_orig, radiation_orig,
-            terraformed_pct, capacity, scan_range, pen_scan_range,
-            driver, warp, route, gate_range, gate_mass, pct_damaged,
+            resources: parse_u32(&col(&fields, &headers, "Resources")),
+            gravity,
+            temperature,
+            radiation,
+            gravity_orig,
+            temperature_orig,
+            radiation_orig,
+            terraformed_pct,
+            capacity,
+            scan_range,
+            pen_scan_range,
+            driver,
+            warp,
+            route,
+            gate_range,
+            gate_mass,
+            pct_damaged,
         });
     }
 
-    let dump = PlanetDump { format: format_str, planets };
+    let dump = PlanetDump {
+        format: format_str,
+        planets,
+    };
     let json = serde_json::to_string_pretty(&dump).unwrap_or_else(|e| {
         eprintln!("serialization error: {e}");
         process::exit(1);

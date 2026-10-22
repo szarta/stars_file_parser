@@ -168,8 +168,20 @@ fn get_hab_range_points(race: &Race) -> i64 {
     for loop_idx in 0..3usize {
         let tt_cf: i32 = match loop_idx {
             0 => 0,
-            1 => if has_tt { 8 } else { 5 },
-            _ => if has_tt { 17 } else { 15 },
+            1 => {
+                if has_tt {
+                    8
+                } else {
+                    5
+                }
+            }
+            _ => {
+                if has_tt {
+                    17
+                } else {
+                    15
+                }
+            }
         };
 
         let mut hab_start = [0i32; 3];
@@ -196,36 +208,89 @@ fn get_hab_range_points(race: &Race) -> i64 {
         let mut grav_sum: f64 = 0.0;
 
         for ig in 0..num_iter[0] {
-            let gv = planet_hab_for_index(ig, 0, loop_idx, num_iter[0], hab_start[0], hab_width[0], hab_center[0], is_immune[0], tt_cf, &mut tf_offset);
+            let gv = planet_hab_for_index(
+                ig,
+                0,
+                loop_idx,
+                num_iter[0],
+                hab_start[0],
+                hab_width[0],
+                hab_center[0],
+                is_immune[0],
+                tt_cf,
+                &mut tf_offset,
+            );
 
             let mut temp_sum: f64 = 0.0;
             for it in 0..num_iter[1] {
-                let tv = planet_hab_for_index(it, 1, loop_idx, num_iter[1], hab_start[1], hab_width[1], hab_center[1], is_immune[1], tt_cf, &mut tf_offset);
+                let tv = planet_hab_for_index(
+                    it,
+                    1,
+                    loop_idx,
+                    num_iter[1],
+                    hab_start[1],
+                    hab_width[1],
+                    hab_center[1],
+                    is_immune[1],
+                    tt_cf,
+                    &mut tf_offset,
+                );
 
                 let mut rad_sum: i64 = 0;
                 for ir in 0..num_iter[2] {
-                    let rv = planet_hab_for_index(ir, 2, loop_idx, num_iter[2], hab_start[2], hab_width[2], hab_center[2], is_immune[2], tt_cf, &mut tf_offset);
+                    let rv = planet_hab_for_index(
+                        ir,
+                        2,
+                        loop_idx,
+                        num_iter[2],
+                        hab_start[2],
+                        hab_width[2],
+                        hab_center[2],
+                        is_immune[2],
+                        tt_cf,
+                        &mut tf_offset,
+                    );
 
-                    let mut desirability = planet_habitability(&is_immune, &hab_low, &hab_high, &hab_center, &[gv, tv, rv]);
+                    let mut desirability = planet_habitability(
+                        &is_immune,
+                        &hab_low,
+                        &hab_high,
+                        &hab_center,
+                        &[gv, tv, rv],
+                    );
 
                     let tf_sum: i32 = tf_offset.iter().sum();
                     if tf_sum > tt_cf {
                         desirability -= (tf_sum - tt_cf) as i64;
-                        if desirability < 0 { desirability = 0; }
+                        if desirability < 0 {
+                            desirability = 0;
+                        }
                     }
 
                     rad_sum += desirability * desirability * loop_weight;
                 }
 
-                let rad_sum = if !is_immune[2] { (rad_sum * hab_width[2] as i64) / 100 } else { rad_sum * 11 };
+                let rad_sum = if !is_immune[2] {
+                    (rad_sum * hab_width[2] as i64) / 100
+                } else {
+                    rad_sum * 11
+                };
                 temp_sum += rad_sum as f64;
             }
 
-            let temp_sum = if !is_immune[1] { temp_sum * hab_width[1] as f64 / 100.0 } else { temp_sum * 11.0 };
+            let temp_sum = if !is_immune[1] {
+                temp_sum * hab_width[1] as f64 / 100.0
+            } else {
+                temp_sum * 11.0
+            };
             grav_sum += temp_sum;
         }
 
-        let grav_sum = if !is_immune[0] { grav_sum * hab_width[0] as f64 / 100.0 } else { grav_sum * 11.0 };
+        let grav_sum = if !is_immune[0] {
+            grav_sum * hab_width[0] as f64 / 100.0
+        } else {
+            grav_sum * 11.0
+        };
         total += grav_sum;
     }
 
@@ -234,20 +299,35 @@ fn get_hab_range_points(race: &Race) -> i64 {
 
 fn prt_raw_points(prt: &Prt) -> i64 {
     match prt {
-        Prt::He => -40,   Prt::Ss => -95,  Prt::Wm => -45,
-        Prt::Ca => -10,   Prt::Is => 100,  Prt::Sd => 150,
-        Prt::Pp => -120,  Prt::It => -180, Prt::Ar => -90,
+        Prt::He => -40,
+        Prt::Ss => -95,
+        Prt::Wm => -45,
+        Prt::Ca => -10,
+        Prt::Is => 100,
+        Prt::Sd => 150,
+        Prt::Pp => -120,
+        Prt::It => -180,
+        Prt::Ar => -90,
         Prt::Joat => 66,
     }
 }
 
 fn lrt_raw_points(lrt: &Lrt) -> i64 {
     match lrt {
-        Lrt::IFE  => -235, Lrt::TT   =>  -25, Lrt::ARM  => -159,
-        Lrt::ISB  => -201, Lrt::GR   =>   40, Lrt::UR   => -240,
-        Lrt::MA   => -155, Lrt::NRE  =>  160, Lrt::CE   =>  240,
-        Lrt::OBRM =>  255, Lrt::NAS  =>  325, Lrt::LSP  =>  180,
-        Lrt::BET  =>   70, Lrt::RS   =>   30,
+        Lrt::IFE => -235,
+        Lrt::TT => -25,
+        Lrt::ARM => -159,
+        Lrt::ISB => -201,
+        Lrt::GR => 40,
+        Lrt::UR => -240,
+        Lrt::MA => -155,
+        Lrt::NRE => 160,
+        Lrt::CE => 240,
+        Lrt::OBRM => 255,
+        Lrt::NAS => 325,
+        Lrt::LSP => 180,
+        Lrt::BET => 70,
+        Lrt::RS => 30,
     }
 }
 
@@ -341,8 +421,16 @@ pub fn advantage_points(race: &Race) -> i32 {
         let oper_p = 10 - num_factories;
 
         let mut tmp: i64 = 0;
-        tmp += if prod_p > 0 { prod_p * 100 } else { prod_p * 121 };
-        tmp += if cost_p > 0 { cost_p * cost_p * -60 } else { cost_p * -55 };
+        tmp += if prod_p > 0 {
+            prod_p * 100
+        } else {
+            prod_p * 121
+        };
+        tmp += if cost_p > 0 {
+            cost_p * cost_p * -60
+        } else {
+            cost_p * -55
+        };
         tmp += if oper_p > 0 { oper_p * 40 } else { oper_p * 35 };
 
         const LLFP: i64 = 700;
@@ -352,7 +440,11 @@ pub fn advantage_points(race: &Race) -> i32 {
 
         if oper_p <= -7 {
             if oper_p < -11 {
-                if oper_p < -14 { tmp -= 360; } else { tmp += (oper_p + 7) * 45; }
+                if oper_p < -14 {
+                    tmp -= 360;
+                } else {
+                    tmp += (oper_p + 7) * 45;
+                }
             } else {
                 tmp += (oper_p + 6) * 30;
             }
@@ -376,8 +468,16 @@ pub fn advantage_points(race: &Race) -> i32 {
         let oper_p = 10 - num_mines;
 
         let mut tmp: i64 = 0;
-        tmp += if prod_p > 0 { prod_p * 100 } else { prod_p * 169 };
-        tmp += if cost_p > 0 { -360 } else { cost_p * (-65) + 80 };
+        tmp += if prod_p > 0 {
+            prod_p * 100
+        } else {
+            prod_p * 169
+        };
+        tmp += if cost_p > 0 {
+            -360
+        } else {
+            cost_p * (-65) + 80
+        };
         tmp += if oper_p > 0 { oper_p * 40 } else { oper_p * 35 };
 
         points += tmp;
@@ -389,7 +489,11 @@ pub fn advantage_points(race: &Race) -> i32 {
     let mut good_lrts: i64 = 0;
     for lrt in &race.lrts {
         let raw = lrt_raw_points(lrt);
-        if raw >= 0 { bad_lrts += 1; } else { good_lrts += 1; }
+        if raw >= 0 {
+            bad_lrts += 1;
+        } else {
+            good_lrts += 1;
+        }
         points += raw;
     }
     let total_lrts = good_lrts + bad_lrts;
@@ -405,23 +509,37 @@ pub fn advantage_points(race: &Race) -> i32 {
 
     if race.lrts.contains(&Lrt::NAS) {
         points -= match race.prt {
-            Prt::Pp => 280, Prt::Ss => 200, Prt::Joat => 40, _ => 0,
+            Prt::Pp => 280,
+            Prt::Ss => 200,
+            Prt::Joat => 40,
+            _ => 0,
         };
     }
 
     let rc = &race.research_costs;
     let mut techcosts: i64 = 0;
-    for f in [&rc.energy, &rc.weapons, &rc.propulsion, &rc.construction, &rc.electronics, &rc.biotechnology] {
+    for f in [
+        &rc.energy,
+        &rc.weapons,
+        &rc.propulsion,
+        &rc.construction,
+        &rc.electronics,
+        &rc.biotechnology,
+    ] {
         match f {
             TechCost::Expensive => techcosts -= 1,
-            TechCost::Cheap     => techcosts += 1,
-            TechCost::Normal    => {}
+            TechCost::Cheap => techcosts += 1,
+            TechCost::Normal => {}
         }
     }
 
     if techcosts > 0 {
         points -= techcosts * techcosts * 130;
-        if techcosts >= 6 { points += 1430; } else if techcosts == 5 { points += 520; }
+        if techcosts >= 6 {
+            points += 1430;
+        } else if techcosts == 5 {
+            points += 520;
+        }
     } else if techcosts < 0 {
         const SCIENCE_COST: [i64; 6] = [150, 330, 540, 780, 1050, 1380];
         let idx = ((-techcosts - 1) as usize).min(5);

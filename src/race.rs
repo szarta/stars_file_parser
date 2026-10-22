@@ -26,24 +26,40 @@ use serde::{Deserialize, Serialize};
 /// IT=7, AR=8, JOAT=9.  CA and AR are inferred (not yet oracle-confirmed).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Prt {
-    #[serde(rename = "HE")]   He,
-    #[serde(rename = "SS")]   Ss,
-    #[serde(rename = "WM")]   Wm,
-    #[serde(rename = "CA")]   Ca,
-    #[serde(rename = "IS")]   Is,
-    #[serde(rename = "SD")]   Sd,
-    #[serde(rename = "PP")]   Pp,
-    #[serde(rename = "IT")]   It,
-    #[serde(rename = "AR")]   Ar,
-    #[serde(rename = "JOAT")] Joat,
+    #[serde(rename = "HE")]
+    He,
+    #[serde(rename = "SS")]
+    Ss,
+    #[serde(rename = "WM")]
+    Wm,
+    #[serde(rename = "CA")]
+    Ca,
+    #[serde(rename = "IS")]
+    Is,
+    #[serde(rename = "SD")]
+    Sd,
+    #[serde(rename = "PP")]
+    Pp,
+    #[serde(rename = "IT")]
+    It,
+    #[serde(rename = "AR")]
+    Ar,
+    #[serde(rename = "JOAT")]
+    Joat,
 }
 
 impl Prt {
     pub fn from_byte(b: u8) -> Option<Self> {
         match b {
-            0 => Some(Self::He),  1 => Some(Self::Ss),  2 => Some(Self::Wm),
-            3 => Some(Self::Ca),  4 => Some(Self::Is),  5 => Some(Self::Sd),
-            6 => Some(Self::Pp),  7 => Some(Self::It),  8 => Some(Self::Ar),
+            0 => Some(Self::He),
+            1 => Some(Self::Ss),
+            2 => Some(Self::Wm),
+            3 => Some(Self::Ca),
+            4 => Some(Self::Is),
+            5 => Some(Self::Sd),
+            6 => Some(Self::Pp),
+            7 => Some(Self::It),
+            8 => Some(Self::Ar),
             9 => Some(Self::Joat),
             _ => None,
         }
@@ -86,11 +102,16 @@ pub enum Lrt {
 /// option in Stars! and reading the byte.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LeftoverSpend {
-    #[serde(rename = "surface_minerals")]      SurfaceMinerals,
-    #[serde(rename = "mineral_concentrations")] MineralConcentrations,
-    #[serde(rename = "mines")]                 Mines,
-    #[serde(rename = "factories")]             Factories,
-    #[serde(rename = "defenses")]              Defenses,
+    #[serde(rename = "surface_minerals")]
+    SurfaceMinerals,
+    #[serde(rename = "mineral_concentrations")]
+    MineralConcentrations,
+    #[serde(rename = "mines")]
+    Mines,
+    #[serde(rename = "factories")]
+    Factories,
+    #[serde(rename = "defenses")]
+    Defenses,
 }
 
 impl LeftoverSpend {
@@ -107,11 +128,11 @@ impl LeftoverSpend {
 
     pub fn to_byte(&self) -> u8 {
         match self {
-            Self::SurfaceMinerals      => 0,
+            Self::SurfaceMinerals => 0,
             Self::MineralConcentrations => 1,
-            Self::Mines                => 2,
-            Self::Factories            => 3,
-            Self::Defenses             => 4,
+            Self::Mines => 2,
+            Self::Factories => 3,
+            Self::Defenses => 4,
         }
     }
 }
@@ -166,8 +187,20 @@ pub struct HabAxis {
 }
 
 impl HabAxis {
-    pub fn immune() -> Self { Self { immune: true, min: None, max: None } }
-    pub fn range(min: f64, max: f64) -> Self { Self { immune: false, min: Some(min), max: Some(max) } }
+    pub fn immune() -> Self {
+        Self {
+            immune: true,
+            min: None,
+            max: None,
+        }
+    }
+    pub fn range(min: f64, max: f64) -> Self {
+        Self {
+            immune: false,
+            min: Some(min),
+            max: Some(max),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -273,16 +306,16 @@ fn decode_hab_axis(center: u8, min_idx: u8, max_idx: u8, axis: u8) -> HabAxis {
 fn decode_lrts(b78: u8, b79: u8) -> Vec<Lrt> {
     let word = (b78 as u16) | ((b79 as u16) << 8);
     const BITS: &[(u8, Lrt)] = &[
-        (0,  Lrt::IFE),
-        (1,  Lrt::TT),
-        (2,  Lrt::ARM),
-        (3,  Lrt::ISB),
-        (4,  Lrt::GR),
-        (5,  Lrt::UR),
-        (6,  Lrt::MA),
-        (7,  Lrt::NRE),
-        (8,  Lrt::CE),
-        (9,  Lrt::OBRM),
+        (0, Lrt::IFE),
+        (1, Lrt::TT),
+        (2, Lrt::ARM),
+        (3, Lrt::ISB),
+        (4, Lrt::GR),
+        (5, Lrt::UR),
+        (6, Lrt::MA),
+        (7, Lrt::NRE),
+        (8, Lrt::CE),
+        (9, Lrt::OBRM),
         (10, Lrt::NAS),
         (11, Lrt::LSP),
         (12, Lrt::BET),
@@ -306,7 +339,10 @@ fn decode_lrts(b78: u8, b79: u8) -> Vec<Lrt> {
 /// need those fields — specifically `r1_to_json` — fill them in afterwards.
 pub fn race_from_payload(p: &[u8]) -> Result<Race, String> {
     if p.len() < 82 {
-        return Err(format!("type-6 payload too short: {} bytes (expected ≥82)", p.len()));
+        return Err(format!(
+            "type-6 payload too short: {} bytes (expected ≥82)",
+            p.len()
+        ));
     }
 
     let tech = |b: u8| -> Result<TechCost, String> {
@@ -315,34 +351,33 @@ pub fn race_from_payload(p: &[u8]) -> Result<Race, String> {
 
     Ok(Race {
         format_version: 1,
-        name:         String::new(),
-        plural_name:  String::new(),
-        icon_index:   0,
-        prt: Prt::from_byte(p[76])
-            .ok_or_else(|| format!("unknown PRT byte {}", p[76]))?,
+        name: String::new(),
+        plural_name: String::new(),
+        icon_index: 0,
+        prt: Prt::from_byte(p[76]).ok_or_else(|| format!("unknown PRT byte {}", p[76]))?,
         lrts: decode_lrts(p[78], p[79]),
         hab: HabPreferences {
-            gravity:     decode_hab_axis(p[16], p[19], p[22], 0),
+            gravity: decode_hab_axis(p[16], p[19], p[22], 0),
             temperature: decode_hab_axis(p[17], p[20], p[23], 1),
-            radiation:   decode_hab_axis(p[18], p[21], p[24], 2),
+            radiation: decode_hab_axis(p[18], p[21], p[24], 2),
         },
         economy: Economy {
-            resource_production:         p[62] as u32 * 100,
-            factory_production:          p[63] as u32,
-            factory_cost:                p[64] as u32,
-            factory_cheap_germanium:     (p[81] & 0x80) != 0,
+            resource_production: p[62] as u32 * 100,
+            factory_production: p[63] as u32,
+            factory_cost: p[64] as u32,
+            factory_cheap_germanium: (p[81] & 0x80) != 0,
             colonists_operate_factories: p[65] as u32,
-            mine_production:             p[66] as u32,
-            mine_cost:                   p[67] as u32,
-            colonists_operate_mines:     p[68] as u32,
-            growth_rate:                 p[25] as u32,
+            mine_production: p[66] as u32,
+            mine_cost: p[67] as u32,
+            colonists_operate_mines: p[68] as u32,
+            growth_rate: p[25] as u32,
         },
         research_costs: ResearchCosts {
-            energy:        tech(p[70])?,
-            weapons:       tech(p[71])?,
-            propulsion:    tech(p[72])?,
-            construction:  tech(p[73])?,
-            electronics:   tech(p[74])?,
+            energy: tech(p[70])?,
+            weapons: tech(p[71])?,
+            propulsion: tech(p[72])?,
+            construction: tech(p[73])?,
+            electronics: tech(p[74])?,
             biotechnology: tech(p[75])?,
             expensive_tech_start_at_4: (p[81] & 0x20) != 0,
         },

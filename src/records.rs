@@ -40,7 +40,7 @@ pub fn parse_file(bytes: &[u8]) -> Result<Vec<Record>, String> {
     while pos + 2 <= bytes.len() {
         let hdr_word = u16::from_le_bytes([bytes[pos], bytes[pos + 1]]);
         let rtype = hdr_word >> 10;
-        let rlen  = (hdr_word & 0x3FF) as usize;
+        let rlen = (hdr_word & 0x3FF) as usize;
         pos += 2;
 
         let end = (pos + rlen).min(bytes.len());
@@ -57,11 +57,17 @@ pub fn parse_file(bytes: &[u8]) -> Result<Vec<Record>, String> {
                     state.advance(derive_pre_advance(raw));
                     lcg = Some(state);
                 }
-                records.push(Record { rtype, payload: raw.to_vec() });
+                records.push(Record {
+                    rtype,
+                    payload: raw.to_vec(),
+                });
             }
             0 => {
                 // End-of-file marker; not decrypted.
-                records.push(Record { rtype, payload: Vec::new() });
+                records.push(Record {
+                    rtype,
+                    payload: Vec::new(),
+                });
             }
             _ => {
                 let mut payload = raw.to_vec();
@@ -82,7 +88,8 @@ pub fn parse_file(bytes: &[u8]) -> Result<Vec<Record>, String> {
 /// Return the decrypted payload of the first record with the given type,
 /// or `None` if no such record exists.
 pub fn first_payload_of_type(records: &[Record], rtype: u16) -> Option<&[u8]> {
-    records.iter()
+    records
+        .iter()
         .find(|r| r.rtype == rtype)
         .map(|r| r.payload.as_slice())
 }
@@ -94,7 +101,9 @@ pub fn first_payload_of_type(records: &[Record], rtype: u16) -> Option<&[u8]> {
 /// record is present or its payload is shorter than 12 bytes.
 pub fn turn_count(records: &[Record]) -> Option<u16> {
     let p = first_payload_of_type(records, 8)?;
-    if p.len() < 12 { return None; }
+    if p.len() < 12 {
+        return None;
+    }
     Some(u16::from_le_bytes([p[10], p[11]]))
 }
 
