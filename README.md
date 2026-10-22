@@ -5,18 +5,18 @@ race files, and plain-text oracle dumps.
 
 ## Tools
 
-| Binary | Input | Description |
-|--------|-------|-------------|
-| `r1_to_json` | `.r1` race file | Converts a Stars! race file to JSON |
-| `json_to_r1` | `race.json` | Writes a Stars!-loadable `.r1` from a race JSON |
-| `m1_to_json` | `.mN` turn file | Extracts full player turn state from a Stars! player file |
-| `xy_to_json` | `.xy` universe file | Decodes universe parameters from a Stars! map file |
-| `json_to_def` | `gamedef.json` | Writes a `.def` file for `stars.exe -a` universe creation |
-| `map_to_json` | `.map` universe dump | Parses a Stars! universe text dump to JSON |
-| `pla_to_json` | `.pla` / `.pNN` planet dump | Parses a Stars! planet text dump to JSON (basic or rich) |
-| `fle_to_json` | `.fle` / `.fNN` fleet dump | Parses a Stars! fleet text dump to JSON (basic or rich) |
-| `dump_records` | any Stars! binary | Debug: print record types and lengths |
-| `dump_type16` | `.mN` turn file | Debug: print raw type-16 FleetBlock payloads |
+| Binary         | Input                       | Description                                               |
+| -------------- | --------------------------- | --------------------------------------------------------- |
+| `r1_to_json`   | `.r1` race file             | Converts a Stars! race file to JSON                       |
+| `json_to_r1`   | `race.json`                 | Writes a Stars!-loadable `.r1` from a race JSON           |
+| `m1_to_json`   | `.mN` turn file             | Extracts full player turn state from a Stars! player file |
+| `xy_to_json`   | `.xy` universe file         | Decodes universe parameters from a Stars! map file        |
+| `json_to_def`  | `gamedef.json`              | Writes a `.def` file for `stars.exe -a` universe creation |
+| `map_to_json`  | `.map` universe dump        | Parses a Stars! universe text dump to JSON                |
+| `pla_to_json`  | `.pla` / `.pNN` planet dump | Parses a Stars! planet text dump to JSON (basic or rich)  |
+| `fle_to_json`  | `.fle` / `.fNN` fleet dump  | Parses a Stars! fleet text dump to JSON (basic or rich)   |
+| `dump_records` | any Stars! binary           | Debug: print record types and lengths                     |
+| `dump_type16`  | `.mN` turn file             | Debug: print raw type-16 FleetBlock payloads              |
 
 ## Build
 
@@ -31,7 +31,7 @@ Binaries land in `target/release/`.
 ## Text dump tools
 
 Stars! can export human-readable text files via `stars.exe -d[pfm] <game>.mN`
-(no display or Xvfb required — the `-d` flag is fully headless).  These three
+(no display or Xvfb required — the `-d` flag is fully headless). These three
 tools parse those exports into JSON for oracle validation.
 
 Before generating dumps, set `NewReports=1` in the `[Misc]` section of
@@ -42,8 +42,8 @@ idempotent setup.
 
 ### map_to_json
 
-Parses a `.map` universe dump (produced by `stars.exe -dm`).  Lists every
-planet in the universe with its position.  The `number` field is the 1-based
+Parses a `.map` universe dump (produced by `stars.exe -dm`). Lists every
+planet in the universe with its position. The `number` field is the 1-based
 ordinal that matches planet ordering in the `.xy` file.
 
 ```sh
@@ -62,7 +62,7 @@ map_to_json <file.map>
 ### pla_to_json
 
 Parses a planet dump — either the basic `.pla` (20 columns) or the richer
-`.pNN` (36 columns, `NewReports=1`).  Format is detected automatically from
+`.pNN` (36 columns, `NewReports=1`). Format is detected automatically from
 the header row.
 
 ```sh
@@ -71,35 +71,35 @@ pla_to_json <file.pla|file.pNN>
 
 **Basic format** (`"format": "basic"`) — present in both:
 
-| Field | Description |
-|-------|-------------|
-| `planet_name` | Planet name |
-| `owner` | Race name of the owner |
-| `starbase_type` | `"Starbase"`, `"Orbital Fort"`, `"--"` = none |
-| `report_age` | Turns since last observation; 0 = current turn |
-| `population` | Colony population |
-| `value_pct` | Habitability value as signed integer percent; null if unparseable |
-| `production_queue` | Queue description string |
-| `mines` / `factories` | Installation counts |
-| `defense_pct` | Defense coverage as float (e.g. `9.56`) |
-| `surface_iron/bora/germ` | Surface minerals in kT |
-| `iron/bora/germ_mining_rate` | Mining rate per mineral |
-| `iron/bora/germ_mineral_conc` | Mineral concentration (0–100) |
-| `resources` | Resources generated per turn |
+| Field                         | Description                                                       |
+| ----------------------------- | ----------------------------------------------------------------- |
+| `planet_name`                 | Planet name                                                       |
+| `owner`                       | Race name of the owner                                            |
+| `starbase_type`               | `"Starbase"`, `"Orbital Fort"`, `"--"` = none                     |
+| `report_age`                  | Turns since last observation; 0 = current turn                    |
+| `population`                  | Colony population                                                 |
+| `value_pct`                   | Habitability value as signed integer percent; null if unparseable |
+| `production_queue`            | Queue description string                                          |
+| `mines` / `factories`         | Installation counts                                               |
+| `defense_pct`                 | Defense coverage as float (e.g. `9.56`)                           |
+| `surface_iron/bora/germ`      | Surface minerals in kT                                            |
+| `iron/bora/germ_mining_rate`  | Mining rate per mineral                                           |
+| `iron/bora/germ_mineral_conc` | Mineral concentration (0–100)                                     |
+| `resources`                   | Resources generated per turn                                      |
 
 **Rich-only fields** (`"format": "rich"`, omitted in basic output):
 
-| Field | Description |
-|-------|-------------|
-| `gravity` / `temperature` / `radiation` | Current hab as display string (e.g. `"1.00g"`, `"0°C"`, `"50mR"`) |
-| `gravity_orig` / `temperature_orig` / `radiation_orig` | Original pre-terraform hab |
-| `terraformed_pct` | 100 = not terraformed; lower = degree of terraforming |
-| `capacity` | Raw `Cap` field; semantics to be confirmed vs. oracle |
-| `scan_range` / `pen_scan_range` | Scanner ranges in ly |
-| `driver` / `warp` | Mass driver target and warp speed (empty/0 = no driver) |
-| `route` | Route destination (empty = no route) |
-| `gate_range` / `gate_mass` | Stargate limits in ly/kT (0 = no gate) |
-| `pct_damaged` | Percent of defenses damaged |
+| Field                                                  | Description                                                       |
+| ------------------------------------------------------ | ----------------------------------------------------------------- |
+| `gravity` / `temperature` / `radiation`                | Current hab as display string (e.g. `"1.00g"`, `"0°C"`, `"50mR"`) |
+| `gravity_orig` / `temperature_orig` / `radiation_orig` | Original pre-terraform hab                                        |
+| `terraformed_pct`                                      | 100 = not terraformed; lower = degree of terraforming             |
+| `capacity`                                             | Raw `Cap` field; semantics to be confirmed vs. oracle             |
+| `scan_range` / `pen_scan_range`                        | Scanner ranges in ly                                              |
+| `driver` / `warp`                                      | Mass driver target and warp speed (empty/0 = no driver)           |
+| `route`                                                | Route destination (empty = no route)                              |
+| `gate_range` / `gate_mass`                             | Stargate limits in ly/kT (0 = no gate)                            |
+| `pct_damaged`                                          | Percent of defenses damaged                                       |
 
 **Note:** the temperature string contains `°C` (CP1252 byte `0xB0`); under
 `from_utf8_lossy` this appears as the Unicode replacement character `\u{FFFD}`.
@@ -108,7 +108,7 @@ This only affects display strings; all numeric fields parse correctly.
 ### fle_to_json
 
 Parses a fleet dump — either the basic `.fle` (12 columns) or the richer
-`.fNN` (29 columns, `NewReports=1`).  Format is detected automatically.
+`.fNN` (29 columns, `NewReports=1`). Format is detected automatically.
 
 ```sh
 fle_to_json <file.fle|file.fNN>
@@ -116,34 +116,34 @@ fle_to_json <file.fle|file.fNN>
 
 **Basic format** (`"format": "basic"`) — present in both:
 
-| Field | Description |
-|-------|-------------|
-| `fleet_name` | Fleet name (e.g. `"Humanoid Armed Probe #1"`) |
-| `x` / `y` | Fleet coordinates |
-| `planet` | Current location name; `"--"` if in deep space |
-| `destination` | Next waypoint name; `"--"` if no orders |
-| `battle_plan` | Active battle plan name |
-| `ship_count` | Number of ships in the fleet |
-| `cargo_iron/bora/germ` | Cargo in kT |
-| `cargo_colonists` | Colonist cargo |
-| `fuel` | Fuel on board in mg |
+| Field                  | Description                                    |
+| ---------------------- | ---------------------------------------------- |
+| `fleet_name`           | Fleet name (e.g. `"Humanoid Armed Probe #1"`)  |
+| `x` / `y`              | Fleet coordinates                              |
+| `planet`               | Current location name; `"--"` if in deep space |
+| `destination`          | Next waypoint name; `"--"` if no orders        |
+| `battle_plan`          | Active battle plan name                        |
+| `ship_count`           | Number of ships in the fleet                   |
+| `cargo_iron/bora/germ` | Cargo in kT                                    |
+| `cargo_colonists`      | Colonist cargo                                 |
+| `fuel`                 | Fuel on board in mg                            |
 
 **Rich-only fields** (`"format": "rich"`, omitted in basic output):
 
-| Field | Description |
-|-------|-------------|
-| `owner` | Player number (1-based) |
-| `eta` | Turns to destination (0 = in orbit) |
-| `warp` | Warp speed to destination (0 = not moving) |
-| `mass_kt` | Total fleet mass in kT |
-| `cloak_pct` | Cloaking level 0–100 |
-| `scan_range` / `pen_scan_range` | Scanner ranges in ly |
-| `task` | Current waypoint task (e.g. `"(no task here)"`, `"Transport"`) |
-| `mining_rate` | Remote mining rate in kT/turn |
-| `sweep_rate` | Mine sweep rate |
-| `mine_laying_rate` | Mines laid per turn |
-| `terraform_rate` | Terraforming rate |
-| `ships_unarmed/scout/warship/utility/bomber` | Ship counts by combat role |
+| Field                                        | Description                                                    |
+| -------------------------------------------- | -------------------------------------------------------------- |
+| `owner`                                      | Player number (1-based)                                        |
+| `eta`                                        | Turns to destination (0 = in orbit)                            |
+| `warp`                                       | Warp speed to destination (0 = not moving)                     |
+| `mass_kt`                                    | Total fleet mass in kT                                         |
+| `cloak_pct`                                  | Cloaking level 0–100                                           |
+| `scan_range` / `pen_scan_range`              | Scanner ranges in ly                                           |
+| `task`                                       | Current waypoint task (e.g. `"(no task here)"`, `"Transport"`) |
+| `mining_rate`                                | Remote mining rate in kT/turn                                  |
+| `sweep_rate`                                 | Mine sweep rate                                                |
+| `mine_laying_rate`                           | Mines laid per turn                                            |
+| `terraform_rate`                             | Terraforming rate                                              |
+| `ships_unarmed/scout/warship/utility/bomber` | Ship counts by combat role                                     |
 
 ---
 
@@ -196,11 +196,11 @@ r1_to_json <file.r1>
 
 #### Hab units
 
-| Axis | Unit | Notes |
-|------|------|-------|
-| Gravity | g | Converted via the 101-entry Gravity_Map lookup table |
-| Temperature | °C | Linear: `(index − 50) × 4`; range −200 to +200 |
-| Radiation | mR/yr | Direct 0–100 integer |
+| Axis        | Unit  | Notes                                                |
+| ----------- | ----- | ---------------------------------------------------- |
+| Gravity     | g     | Converted via the 101-entry Gravity_Map lookup table |
+| Temperature | °C    | Linear: `(index − 50) × 4`; range −200 to +200       |
+| Radiation   | mR/yr | Direct 0–100 integer                                 |
 
 ### m1_to_json
 
@@ -210,12 +210,12 @@ Reads a Stars! `.mN` player turn file and writes turn state JSON to stdout.
 m1_to_json <file.m1>
 ```
 
-**Also works on `.hst` host files.**  The `.hst` shares the same record
+**Also works on `.hst` host files.** The `.hst` shares the same record
 container format and uses the same type-13 `PlanetBlock` byte layout as
 `.mN`, so pointing `m1_to_json` at a `.hst` produces the omniscient
 universe view: every planet record (not just the ones any one player has
 scanned) is emitted, with full `gravity` / `temperature` / `radiation` /
-mineral concentration data.  This is the recommended path for
+mineral concentration data. This is the recommended path for
 universe-wide oracle measurements until a dedicated `hst_to_json` exists
 — `.hst`-specific fields (cross-player state) will be missing or
 mis-decoded, but the planet records are correct.
@@ -235,75 +235,75 @@ mis-decoded, but the planet records are correct.
 
 **`player`** — state from the type-6 PlayerBlock:
 
-| Field | Description |
-|-------|-------------|
-| `homeworld_planet_idx` | 0-based planet index of the player's homeworld |
-| `planet_count` | Number of planets owned by this player |
-| `tech_energy` … `tech_biology` | Current tech levels in all six fields |
-| `race` | Race design parameters (same layout as `r1_to_json`, minus name/icon) |
-| `battle_plans` | List of battle plan records (type-30 BattlePlanBlock) |
+| Field                          | Description                                                           |
+| ------------------------------ | --------------------------------------------------------------------- |
+| `homeworld_planet_idx`         | 0-based planet index of the player's homeworld                        |
+| `planet_count`                 | Number of planets owned by this player                                |
+| `tech_energy` … `tech_biology` | Current tech levels in all six fields                                 |
+| `race`                         | Race design parameters (same layout as `r1_to_json`, minus name/icon) |
+| `battle_plans`                 | List of battle plan records (type-30 BattlePlanBlock)                 |
 
 Each battle plan has `plan_id`, `tactic`, `primary_target`, `secondary_target`,
-and `attack_who`.  Target codes: 0=None, 1=Any, 2=Starbase, 3=Armed Ships,
+and `attack_who`. Target codes: 0=None, 1=Any, 2=Starbase, 3=Armed Ships,
 4=Bombers/Freighters, 5=Unarmed Ships, 6=Fuel Transports, 7=Freighters.
 
 **`planets`** — one entry per type-13 PlanetBlock visible to the player:
 
-| Field | Description |
-|-------|-------------|
-| `planet_index` | 0-based index |
-| `owner_id` | Player index (31 = uninhabited) |
-| `colonized` | True if the planet has a colony |
-| `conc_ironium/boranium/germanium` | Mineral concentrations (0–100) |
-| `gravity/temperature/radiation` | Environment indices (0–100) |
-| `surface_ironium/boranium/germanium` | Surface minerals in kT (colonised only) |
-| `population` | Population in units of 100 colonists (colonised only) |
-| `mines/factories/defenses` | Installation counts (colonised only) |
+| Field                                | Description                                           |
+| ------------------------------------ | ----------------------------------------------------- |
+| `planet_index`                       | 0-based index                                         |
+| `owner_id`                           | Player index (31 = uninhabited)                       |
+| `colonized`                          | True if the planet has a colony                       |
+| `conc_ironium/boranium/germanium`    | Mineral concentrations (0–100)                        |
+| `gravity/temperature/radiation`      | Environment indices (0–100)                           |
+| `surface_ironium/boranium/germanium` | Surface minerals in kT (colonised only)               |
+| `population`                         | Population in units of 100 colonists (colonised only) |
+| `mines/factories/defenses`           | Installation counts (colonised only)                  |
 
 **`fleets`** — one entry per type-16 FleetBlock:
 
-| Field | Description |
-|-------|-------------|
-| `fleet_index` | Fleet identifier |
-| `orbit_planet_idx` | Orbited planet index (65535 = en route) |
-| `en_route` | True when the fleet is between planets |
-| `x`, `y` | Coordinates |
-| `design_bitmask` | Bitmask of design slots present in the fleet |
-| `num_stacks` | Number of distinct ship designs |
-| `b16_raw` | Raw byte 16; correlates with fuel > 255 (1 when fuel ≤ 255, 2 when fuel > 255) |
-| `fuel_mg` | Fuel on board in mg (confirmed from in-game Report→Fleets, 2026-04-17) |
-| `battle_plan_idx` | Active battle plan index (omitted for fleets with fuel ≤ 255) |
-| `waypoint_count` | Number of waypoints including current position |
+| Field              | Description                                                                    |
+| ------------------ | ------------------------------------------------------------------------------ |
+| `fleet_index`      | Fleet identifier                                                               |
+| `orbit_planet_idx` | Orbited planet index (65535 = en route)                                        |
+| `en_route`         | True when the fleet is between planets                                         |
+| `x`, `y`           | Coordinates                                                                    |
+| `design_bitmask`   | Bitmask of design slots present in the fleet                                   |
+| `num_stacks`       | Number of distinct ship designs                                                |
+| `b16_raw`          | Raw byte 16; correlates with fuel > 255 (1 when fuel ≤ 255, 2 when fuel > 255) |
+| `fuel_mg`          | Fuel on board in mg (confirmed from in-game Report→Fleets, 2026-04-17)         |
+| `battle_plan_idx`  | Active battle plan index (omitted for fleets with fuel ≤ 255)                  |
+| `waypoint_count`   | Number of waypoints including current position                                 |
 
 **`waypoints`** — one entry per type-19/20 waypoint record, in file order:
 
-| Field | Description |
-|-------|-------------|
-| `x`, `y` | Waypoint coordinates |
-| `planet_index` | Target planet (0 = deep space) |
-| `warp_speed` | 0 = stationary/orbit, 1–10 = warp N |
-| `task_type` | 0=None, 1=Transport, 2=Colonize, 3=Remote Mining, 4=Merge, 5=Scrap, 6=Lay Mines, 7=Patrol, 8=Route, 9=Transfer |
-| `is_current_position` | True for the implicit first waypoint of an en-route fleet |
-| `has_task_payload` | True for type-19 records (task parameters present) |
-| `transport_payload` | Ironium/boranium/germanium/colonists/fuel ops (Transport task only) |
+| Field                 | Description                                                                                                    |
+| --------------------- | -------------------------------------------------------------------------------------------------------------- |
+| `x`, `y`              | Waypoint coordinates                                                                                           |
+| `planet_index`        | Target planet (0 = deep space)                                                                                 |
+| `warp_speed`          | 0 = stationary/orbit, 1–10 = warp N                                                                            |
+| `task_type`           | 0=None, 1=Transport, 2=Colonize, 3=Remote Mining, 4=Merge, 5=Scrap, 6=Lay Mines, 7=Patrol, 8=Route, 9=Transfer |
+| `is_current_position` | True for the implicit first waypoint of an en-route fleet                                                      |
+| `has_task_payload`    | True for type-19 records (task parameters present)                                                             |
+| `transport_payload`   | Ironium/boranium/germanium/colonists/fuel ops (Transport task only)                                            |
 
 Each `transport_payload` resource op has `amount` (kT) and `action`
 (0=No change, 1=Unload All, 2=Load All, 3=Load Exactly, 4=Unload Exactly, 5=Fill Up To).
 
 **`designs`** — one entry per type-26 DesignBlock (full-design records only):
 
-| Field | Description |
-|-------|-------------|
-| `design_number` | Design slot index |
-| `is_starbase` | True for orbital structures |
-| `hull_id` / `hull_name` | Hull type numeric ID and name |
-| `pic` | Picture index |
-| `armor` | Total armor value |
-| `slot_count` | Number of component slots |
-| `turn_designed` | Turn the design was created |
-| `total_built` / `total_remaining` | Lifetime production and surviving count |
-| `name` | Design name (decoded from Stars! nibble encoding) |
-| `slots` | List of component slots: `category`, `category_name`, `item_id`, `count`, `component` |
+| Field                             | Description                                                                           |
+| --------------------------------- | ------------------------------------------------------------------------------------- |
+| `design_number`                   | Design slot index                                                                     |
+| `is_starbase`                     | True for orbital structures                                                           |
+| `hull_id` / `hull_name`           | Hull type numeric ID and name                                                         |
+| `pic`                             | Picture index                                                                         |
+| `armor`                           | Total armor value                                                                     |
+| `slot_count`                      | Number of component slots                                                             |
+| `turn_designed`                   | Turn the design was created                                                           |
+| `total_built` / `total_remaining` | Lifetime production and surviving count                                               |
+| `name`                            | Design name (decoded from Stars! nibble encoding)                                     |
+| `slots`                           | List of component slots: `category`, `category_name`, `item_id`, `count`, `component` |
 
 #### Known limitations
 
@@ -332,12 +332,12 @@ xy_to_json <file.xy>
 }
 ```
 
-| Field | Values |
-|-------|--------|
-| `map_size` | `tiny` / `small` / `medium` / `large` / `huge` |
-| `planet_count` | 32 / 128 / 288 / 512 / 800 |
-| `intended_player_count` | Total players the game was set up with |
-| `difficulty` | `easy\|standard` / `harder` / `expert` |
+| Field                   | Values                                         |
+| ----------------------- | ---------------------------------------------- |
+| `map_size`              | `tiny` / `small` / `medium` / `large` / `huge` |
+| `planet_count`          | 32 / 128 / 288 / 512 / 800                     |
+| `intended_player_count` | Total players the game was set up with         |
+| `difficulty`            | `easy\|standard` / `harder` / `expert`         |
 
 #### Known limitations
 
@@ -352,7 +352,7 @@ Reads a game definition JSON and writes a Stars! `.def` file for use with
 json_to_def <input.json> <output.def>
 ```
 
-Use `-` for stdin/stdout.  The output uses Windows CRLF line endings — Stars!
+Use `-` for stdin/stdout. The output uses Windows CRLF line endings — Stars!
 silently ignores `.def` files with LF-only endings.
 
 #### Workflow
@@ -426,12 +426,12 @@ fle_to_json GameName.f1
 
 **`universe` fields:**
 
-| Field | Values |
-|-------|--------|
-| `map_size` | `tiny` / `small` / `medium` / `large` / `huge` |
-| `density` | `sparse` / `normal` / `dense` / `packed` |
-| `player_positions` | `close` / `moderate` / `farther` / `distant` |
-| `seed` | Any 32-bit integer |
+| Field              | Values                                         |
+| ------------------ | ---------------------------------------------- |
+| `map_size`         | `tiny` / `small` / `medium` / `large` / `huge` |
+| `density`          | `sparse` / `normal` / `dense` / `packed`       |
+| `player_positions` | `close` / `moderate` / `farther` / `distant`   |
+| `seed`             | Any 32-bit integer                             |
 
 **`players`:** each element is `{ "human": { "race_file": "..." } }` or
 `{ "ai": { "difficulty": N, "param": 1 } }` where `difficulty` is
@@ -450,7 +450,7 @@ fle_to_json GameName.f1
 
 Stars! binary data files (`.r1`, `.mN`, `.xN`, `.hst`, `.xy`) are record
 containers: a sequence of 2-byte little-endian headers (`high 6 bits = type`,
-`low 10 bits = payload length`) followed by payloads.  Type-8 records are
+`low 10 bits = payload length`) followed by payloads. Type-8 records are
 plaintext file headers that seed an L'Ecuyer (1988) combined LCG; all other
 payloads are XOR-encrypted with the key stream from that LCG.
 
@@ -460,27 +460,49 @@ The shared cipher and record-parsing logic lives in `src/cipher.rs` and
 The `.r1` type-6 payload is a direct memory dump of a 192-byte struct.
 Confirmed field offsets:
 
-| Offset | Field |
-|--------|-------|
-| 16–18 | Hab center (grav, temp, rad) — `0xFF` = immune |
-| 19–21 | Hab min (grav, temp, rad) |
-| 22–24 | Hab max (grav, temp, rad) |
-| 25 | Growth rate (%) |
-| 62 | Resource production ÷ 100 |
-| 63 | Factory production |
-| 64 | Factory cost |
-| 65 | Colonists to operate factories (thousands) |
-| 66 | Mine production |
-| 67 | Mine cost |
-| 68 | Colonists to operate mines (thousands) |
-| 70–75 | Research costs: energy, weapons, propulsion, construction, electronics, biotechnology (0=Expensive, 1=Normal, 2=Cheap) |
-| 76 | PRT (HE=0, SS=1, WM=2, CA=3, IS=4, SD=5, PP=6, IT=7, AR=8, JOAT=9) |
-| 78–79 | LRT bitmask (16-bit LE; bits 0–13 map to IFE, TT, ARM, ISB, GR, UR, MA, NRE, CE, OBRM, NAS, LSP, BET, RS) |
-| 80 | Icon index (low 5 bits) |
-| 81 | Flags: bit 7 = cheap germanium, bit 5 = expensive tech boost |
-| 112+ | Name section |
+| Offset | Field                                                                                                                  |
+| ------ | ---------------------------------------------------------------------------------------------------------------------- |
+| 16–18  | Hab center (grav, temp, rad) — `0xFF` = immune                                                                         |
+| 19–21  | Hab min (grav, temp, rad)                                                                                              |
+| 22–24  | Hab max (grav, temp, rad)                                                                                              |
+| 25     | Growth rate (%)                                                                                                        |
+| 62     | Resource production ÷ 100                                                                                              |
+| 63     | Factory production                                                                                                     |
+| 64     | Factory cost                                                                                                           |
+| 65     | Colonists to operate factories (thousands)                                                                             |
+| 66     | Mine production                                                                                                        |
+| 67     | Mine cost                                                                                                              |
+| 68     | Colonists to operate mines (thousands)                                                                                 |
+| 70–75  | Research costs: energy, weapons, propulsion, construction, electronics, biotechnology (0=Expensive, 1=Normal, 2=Cheap) |
+| 76     | PRT (HE=0, SS=1, WM=2, CA=3, IS=4, SD=5, PP=6, IT=7, AR=8, JOAT=9)                                                     |
+| 78–79  | LRT bitmask (16-bit LE; bits 0–13 map to IFE, TT, ARM, ISB, GR, UR, MA, NRE, CE, OBRM, NAS, LSP, BET, RS)              |
+| 80     | Icon index (low 5 bits)                                                                                                |
+| 81     | Flags: bit 7 = cheap germanium, bit 5 = expensive tech boost                                                           |
+| 112+   | Name section                                                                                                           |
 
 Bytes 16–81 have the **same layout** in `.mN` player turn files (type-6 PlayerBlock),
 allowing `m1_to_json` to reuse the same race decoder.
 
 Full layout specification: `stars-reborn-design/docs/new_game/race_file_format.rst`.
+
+## Development
+
+Install the Git hooks before committing:
+
+```sh
+pre-commit install
+pre-commit run --all-files
+```
+
+Rust is formatted with rustfmt and linted with clippy (`-D warnings`);
+JSON/YAML/Markdown with [moldy](https://github.com/brandon-arrendondo/moldy);
+complexity is gated by [knots](https://github.com/brandon-arrendondo/knots-pre-commit).
+Commits require a DCO sign-off (`git commit -s`) and carry no AI attribution
+trailer; see `AGENTS.md`.
+
+## AI Assistance
+
+Parts of this project were written with the assistance of AI coding agents,
+under human review and direction. This note is the single place that
+acknowledgment lives — individual commits do not carry AI attribution
+trailers.

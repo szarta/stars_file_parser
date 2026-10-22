@@ -1,2 +1,4 @@
 /target
 .todo-sqlite-cli
+__pycache__/
+*.py[cod]
