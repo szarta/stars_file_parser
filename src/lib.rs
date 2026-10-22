@@ -11,3 +11,4 @@ pub mod name;
 pub mod universe;
 pub mod gamedef;
 pub mod advantage_points;
+pub mod messages;

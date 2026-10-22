@@ -36,8 +36,9 @@ tools parse those exports into JSON for oracle validation.
 
 Before generating dumps, set `NewReports=1` in the `[Misc]` section of
 `~/.wine32/drive_c/windows/Stars.ini` to get the richer `.pNN`/`.fNN` format.
-Use `create_stars_ini.py` in `stars-reborn-research/automation/` to do this
-idempotently, or run `dump_game_info.py` which calls it automatically.
+The companion [`stars_automator`](https://github.com/szarta/stars_automator)
+repo provides `stars-create-ini` (or `python3 -m stars_automator.ini`) for
+idempotent setup.
 
 ### map_to_json
 
@@ -208,6 +209,16 @@ Reads a Stars! `.mN` player turn file and writes turn state JSON to stdout.
 ```sh
 m1_to_json <file.m1>
 ```
+
+**Also works on `.hst` host files.**  The `.hst` shares the same record
+container format and uses the same type-13 `PlanetBlock` byte layout as
+`.mN`, so pointing `m1_to_json` at a `.hst` produces the omniscient
+universe view: every planet record (not just the ones any one player has
+scanned) is emitted, with full `gravity` / `temperature` / `radiation` /
+mineral concentration data.  This is the recommended path for
+universe-wide oracle measurements until a dedicated `hst_to_json` exists
+— `.hst`-specific fields (cross-player state) will be missing or
+mis-decoded, but the planet records are correct.
 
 #### Output format
 

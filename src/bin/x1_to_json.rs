@@ -316,11 +316,52 @@ enum Order {
         name:      String,
     },
 
+    /// Type-27 (short form) — delete a ship/starbase design.
+    ///
+    /// 2-byte payload `[subtype, design_slot]`. Confirmed via shoestring-wm
+    /// oracle 2026-07-13: deleting design slots 0/1/2 emits payloads
+    /// `00 00` / `00 01` / `00 02` respectively, so byte 1 is the 0-based
+    /// design slot and byte 0 is a subtype/flags byte (0x00 for the plain
+    /// delete-by-slot observed here; corpus also shows nonzero first bytes
+    /// e.g. `80`/`b0`, a not-yet-decoded subtype). The long form (34–80 B,
+    /// full design spec) is emitted on design create/save and remains
+    /// undecoded — surfaced as `DesignSave` with its raw bytes.
+    DeleteDesign {
+        design_slot: u8,
+        subtype:     u8,
+    },
+
+    /// Type-27 (long form) — ship/starbase design create/save.
+    ///
+    /// 34–80 B. Structure (partially decoded, oracle 2026-07-13): begins
+    /// `slot, id, 0x07, hull, .., .., 0x14, ..` — byte 2 (`0x07`) and byte 6
+    /// (`0x14`) are invariant across captured samples and the research corpus.
+    /// Emitted on Copy-and-save from the Ship Designer; a trailing
+    /// Stars-name-encoded design name closes the record. Full slot-tuple
+    /// decoding is pending dedicated component-varying oracle runs.
+    DesignSave {
+        payload_hex: String,
+    },
+
     /// Unknown or not-yet-decoded record type.
     Unknown {
         record_type: u16,
         payload_hex: String,
     },
+}
+
+fn hex(p: &[u8]) -> String {
+    p.iter().map(|b| format!("{b:02x}")).collect::<Vec<_>>().join(" ")
+}
+
+/// Decode a type-27 record: short form (2 B) is a design delete; longer forms
+/// are a full design save (not yet fully decoded).
+fn decode_type27(p: &[u8]) -> Order {
+    if p.len() == 2 {
+        Order::DeleteDesign { subtype: p[0], design_slot: p[1] }
+    } else {
+        Order::DesignSave { payload_hex: hex(p) }
+    }
 }
 
 // ── Decoders ──────────────────────────────────────────────────────────────────
@@ -511,6 +552,7 @@ fn main() {
             10 => orders.push(decode_type10(&rec.payload)),
             23 => orders.push(decode_type23(&rec.payload)),
             24 => orders.push(decode_type24(&rec.payload)),
+            27 => orders.push(decode_type27(&rec.payload)),
             29 => orders.push(decode_type29(&rec.payload)),
             30 => orders.push(decode_type30(&rec.payload)),
             34 => orders.push(decode_type34(&rec.payload)),

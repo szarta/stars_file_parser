@@ -67,7 +67,12 @@
 use std::{env, path::Path, process};
 
 use serde::Serialize;
-use stars_file_parser::{name::decode_names, race::{race_from_payload, Race}, records::{game_year, parse_file}};
+use stars_file_parser::{
+    messages::{decode_events_block, EventsRecord},
+    name::decode_names,
+    race::{race_from_payload, Race},
+    records::{game_year, parse_file},
+};
 
 // ── Output types ─────────────────────────────────────────────────────────────
 
@@ -360,6 +365,11 @@ struct TurnState {
     waypoints: Vec<WaypointRecord>,
     /// Ship and starbase designs (type-26 DesignBlock, full-design variant only).
     designs: Vec<DesignRecord>,
+    /// EventsBlock (type-12) records — partial decode.  Each entry exposes the
+    /// header message ID/format string plus the full raw payload.  Per-arg-type
+    /// byte widths are still being reverse-engineered — see
+    /// stars-reborn-research/docs/findings/events_block.rst.
+    events: Vec<EventsRecord>,
 }
 
 // ── Record decoders ───────────────────────────────────────────────────────────
@@ -936,9 +946,13 @@ fn main() {
     let mut fleets: Vec<FleetRecord> = Vec::new();
     let mut waypoints: Vec<WaypointRecord> = Vec::new();
     let mut designs: Vec<DesignRecord> = Vec::new();
+    let mut events: Vec<EventsRecord> = Vec::new();
 
     for rec in &records {
         match rec.rtype {
+            12 => {
+                events.push(decode_events_block(&rec.payload));
+            }
             6 => {
                 // A .mN file may contain one type-6 PlayerBlock per known
                 // player (own + any whose race has been learned via
@@ -1011,6 +1025,7 @@ fn main() {
         fleets,
         waypoints,
         designs,
+        events,
     };
 
     let json = serde_json::to_string_pretty(&turn).unwrap_or_else(|e| {
