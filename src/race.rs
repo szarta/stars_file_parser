@@ -385,3 +385,116 @@ pub fn race_from_payload(p: &[u8]) -> Result<Race, String> {
             .ok_or_else(|| format!("unknown leftover_spend byte {}", p[69]))?,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn approx(a: f64, b: f64) -> bool {
+        (a - b).abs() < 1e-9
+    }
+
+    /// A type-6 payload with known bytes in every field this decoder reads.
+    fn crafted_payload() -> Vec<u8> {
+        let mut p = vec![0u8; 82];
+        p[76] = 9; // PRT = JOAT
+        p[78] = 0x81; // LRT bits 0 (IFE) and 7 (NRE)
+        p[79] = 0x00;
+        p[69] = 0; // leftover_spend = surface_minerals
+        p[70] = 0; // energy = expensive
+        p[71] = 1; // weapons = normal
+        p[72] = 2; // propulsion = cheap
+        p[73] = 1; // construction = normal
+        p[74] = 1; // electronics = normal
+        p[75] = 1; // biotechnology = normal
+        p[16] = 0xff; // gravity immune
+        p[17] = 50; // temperature center present
+        p[20] = 25; // temp min idx → (25-50)*4 = -100 °C
+        p[23] = 75; // temp max idx → (75-50)*4 =  100 °C
+        p[18] = 50; // radiation center present
+        p[21] = 15; // radiation min → 15 mR/yr
+        p[24] = 85; // radiation max → 85 mR/yr
+        p[25] = 15; // growth_rate
+        p[62] = 10; // resource_production → ×100 = 1000
+        p[63] = 11; // factory_production
+        p[64] = 10; // factory_cost
+        p[65] = 25; // colonists_operate_factories
+        p[66] = 10; // mine_production
+        p[67] = 5; // mine_cost
+        p[68] = 10; // colonists_operate_mines
+        p[81] = 0x80 | 0x20; // cheap-germanium + expensive-tech-start-at-4
+        p
+    }
+
+    #[test]
+    fn decodes_all_race_fields() {
+        let race = race_from_payload(&crafted_payload()).expect("decodes");
+        assert_eq!(race.prt, Prt::Joat);
+        assert_eq!(race.lrts, vec![Lrt::IFE, Lrt::NRE]);
+        assert_eq!(race.leftover_spend, LeftoverSpend::SurfaceMinerals);
+        assert_eq!(race.research_costs.energy, TechCost::Expensive);
+        assert_eq!(race.research_costs.weapons, TechCost::Normal);
+        assert_eq!(race.research_costs.propulsion, TechCost::Cheap);
+        assert!(race.research_costs.expensive_tech_start_at_4);
+
+        assert!(race.hab.gravity.immune);
+        assert!(!race.hab.temperature.immune);
+        assert!(approx(race.hab.temperature.min.unwrap(), -100.0));
+        assert!(approx(race.hab.temperature.max.unwrap(), 100.0));
+        assert!(approx(race.hab.radiation.min.unwrap(), 15.0));
+        assert!(approx(race.hab.radiation.max.unwrap(), 85.0));
+
+        assert_eq!(race.economy.resource_production, 1000);
+        assert_eq!(race.economy.factory_production, 11);
+        assert_eq!(race.economy.growth_rate, 15);
+        assert!(race.economy.factory_cheap_germanium);
+    }
+
+    #[test]
+    fn rejects_short_payload() {
+        let err = race_from_payload(&[0u8; 40]).unwrap_err();
+        assert!(err.contains("too short"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn prt_byte_mapping_is_total_over_valid_range() {
+        for b in 0u8..=9 {
+            assert!(Prt::from_byte(b).is_some(), "byte {b} should map to a PRT");
+        }
+        assert!(Prt::from_byte(10).is_none());
+    }
+
+    #[test]
+    fn leftover_spend_byte_round_trips() {
+        for b in 0u8..=4 {
+            assert_eq!(LeftoverSpend::from_byte(b).unwrap().to_byte(), b);
+        }
+        assert!(LeftoverSpend::from_byte(5).is_none());
+    }
+
+    #[test]
+    fn tech_cost_byte_mapping() {
+        assert_eq!(TechCost::from_byte(0), Some(TechCost::Expensive));
+        assert_eq!(TechCost::from_byte(1), Some(TechCost::Normal));
+        assert_eq!(TechCost::from_byte(2), Some(TechCost::Cheap));
+        assert!(TechCost::from_byte(3).is_none());
+    }
+
+    #[test]
+    fn lrt_bitmask_decodes_each_set_bit_in_file_order() {
+        assert!(decode_lrts(0, 0).is_empty());
+        // bit 7 (NRE) in the low byte, bit 13 (RS) in the high byte.
+        assert_eq!(decode_lrts(0x80, 0x20), vec![Lrt::NRE, Lrt::RS]);
+    }
+
+    // Known limitation: the Gravity_Map approximates the five "unreachable"
+    // indices (1, 3, 5, 7, 10) with their nearest reachable neighbour, so e.g.
+    // index 1 is not distinct from index 0. Pinned as an expected-fail: the game
+    // never emits those indices, but if their exact handling is ever confirmed
+    // this becomes the regression that unignores.
+    #[test]
+    #[ignore = "gravity unreachable-index approximation is documented future work"]
+    fn unreachable_gravity_indices_are_distinct() {
+        assert_ne!(GRAV_CENTI[0], GRAV_CENTI[1]);
+    }
+}

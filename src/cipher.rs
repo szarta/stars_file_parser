@@ -114,3 +114,46 @@ pub fn decrypt(data: &mut [u8], lcg: &mut LcgState) {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn derive_seeds_indexes_the_prime_table() {
+        // seed_word 0: both nibble indices are 0; the clear 0x400 bit pushes the
+        // second index up by 32.
+        assert_eq!(derive_seeds(0), (SEED_TABLE[0], SEED_TABLE[32]));
+        // Bit 15 of the seed word sets param3 bit 10 (0x400), pushing the FIRST
+        // index up by 32 instead — the two table picks swap.
+        assert_eq!(derive_seeds(0x8000), (SEED_TABLE[32], SEED_TABLE[0]));
+    }
+
+    #[test]
+    fn lcg_stream_is_deterministic() {
+        let (s1, s2) = derive_seeds(0x1234);
+        let mut a = LcgState::new(s1, s2);
+        let mut b = LcgState::new(s1, s2);
+        for _ in 0..16 {
+            assert_eq!(a.next_key_dword(), b.next_key_dword());
+        }
+    }
+
+    #[test]
+    fn decrypt_is_its_own_inverse() {
+        // 37 bytes exercises both the 4-byte chunk path and the 1-byte remainder.
+        let plain: Vec<u8> = (0u8..37).collect();
+        let (s1, s2) = derive_seeds(0x4242);
+
+        let mut enc = LcgState::new(s1, s2);
+        enc.advance(3);
+        let mut buf = plain.clone();
+        decrypt(&mut buf, &mut enc); // XOR encrypt
+        assert_ne!(buf, plain);
+
+        let mut dec = LcgState::new(s1, s2);
+        dec.advance(3);
+        decrypt(&mut buf, &mut dec); // XOR decrypt
+        assert_eq!(buf, plain, "XOR cipher must round-trip under the same seed");
+    }
+}

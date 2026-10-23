@@ -111,3 +111,99 @@ pub fn turn_count(records: &[Record]) -> Option<u16> {
 pub fn game_year(records: &[Record]) -> Option<u32> {
     turn_count(records).map(|t| 2400 + t as u32)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cipher::{decrypt, derive_pre_advance, derive_seeds, LcgState};
+    use crate::race::{race_from_payload, Prt};
+
+    /// Little-endian 2-byte record header: high 6 bits type, low 10 bits length.
+    fn hdr(rtype: u16, len: usize) -> [u8; 2] {
+        ((rtype << 10) | (len as u16)).to_le_bytes()
+    }
+
+    #[test]
+    fn parse_requires_a_file_header() {
+        // A lone end-marker carries no type-8 record, so there is no cipher seed.
+        let err = parse_file(&hdr(0, 0)).unwrap_err();
+        assert!(err.contains("type-8"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn frames_header_and_end_marker() {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&hdr(8, 16));
+        bytes.extend_from_slice(&[0u8; 16]);
+        bytes.extend_from_slice(&hdr(0, 0));
+
+        let records = parse_file(&bytes).expect("header present");
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].rtype, 8);
+        assert_eq!(records[0].payload.len(), 16);
+        assert_eq!(records[1].rtype, 0);
+        assert!(records[1].payload.is_empty());
+    }
+
+    #[test]
+    fn turn_counter_and_game_year_read_from_header() {
+        let mut header = [0u8; 16];
+        header[10] = 7; // turn 7 → year 2407
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&hdr(8, 16));
+        bytes.extend_from_slice(&header);
+        bytes.extend_from_slice(&hdr(0, 0));
+
+        let records = parse_file(&bytes).expect("header present");
+        assert_eq!(turn_count(&records), Some(7));
+        assert_eq!(game_year(&records), Some(2407));
+    }
+
+    /// A type-6 race payload encrypted with the real cipher must decrypt back to
+    /// the exact plaintext when parsed — exercising framing, seeding, and the XOR
+    /// keystream together, then decoding the recovered bytes as a race.
+    #[test]
+    fn encrypted_payload_round_trips_through_parse() {
+        let seed_word: u16 = 0x1234;
+        let mut header = [0u8; 16];
+        header[4] = 1; // feeds derive_pre_advance
+        header[10] = 7; // turn counter
+        header[12] = (seed_word & 0xff) as u8;
+        header[13] = (seed_word >> 8) as u8;
+
+        let mut plain = vec![0u8; 82];
+        plain[76] = 9; // PRT = JOAT
+        for b in plain.iter_mut().take(76).skip(70) {
+            *b = 1; // all six tech costs = Normal
+        }
+        plain[16] = 0xff; // gravity immune
+        plain[17] = 0xff; // temperature immune
+        plain[18] = 0xff; // radiation immune
+
+        // Encrypt with a state seeded exactly as parse_file will seed its own.
+        let (s1, s2) = derive_seeds(seed_word);
+        let mut enc = LcgState::new(s1, s2);
+        enc.advance(derive_pre_advance(&header));
+        let mut cipher_payload = plain.clone();
+        decrypt(&mut cipher_payload, &mut enc);
+        assert_ne!(
+            cipher_payload, plain,
+            "payload should actually be encrypted"
+        );
+
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&hdr(8, 16));
+        bytes.extend_from_slice(&header);
+        bytes.extend_from_slice(&hdr(6, plain.len()));
+        bytes.extend_from_slice(&cipher_payload);
+        bytes.extend_from_slice(&hdr(0, 0));
+
+        let records = parse_file(&bytes).expect("header present");
+        let decoded = first_payload_of_type(&records, 6).expect("type-6 present");
+        assert_eq!(decoded, &plain[..], "decrypt must recover the plaintext");
+        assert_eq!(turn_count(&records), Some(7));
+
+        let race = race_from_payload(decoded).expect("race decodes");
+        assert_eq!(race.prt, Prt::Joat);
+    }
+}

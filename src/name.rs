@@ -151,3 +151,52 @@ pub fn decode_names(payload: &[u8]) -> (String, String) {
 
     (singular, plural)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn decodes_single_nibble_letters() {
+        // Codes 1,1,1 ('a','a','a') packed high-nibble-first with a trailing 0xf
+        // pad nibble.
+        assert_eq!(decode_name_key(&[0x11, 0x1f]), "aaa");
+    }
+
+    #[test]
+    fn plural_defaults_to_singular_plus_s_when_absent() {
+        let mut payload = vec![0u8; 117];
+        payload[112] = 0x00; // constant
+        payload[113] = 0x02; // singular key length
+        payload[114] = 0x11; // "aaa"
+        payload[115] = 0x1f;
+        payload[116] = 0x00; // plural length 0 → block absent
+
+        let (singular, plural) = decode_names(&payload);
+        assert_eq!(singular, "aaa");
+        assert_eq!(plural, "aaas");
+    }
+
+    #[test]
+    fn decodes_an_explicit_plural_block() {
+        let mut payload = vec![0u8; 118];
+        payload[112] = 0x00;
+        payload[113] = 0x02; // singular "aaa"
+        payload[114] = 0x11;
+        payload[115] = 0x1f;
+        payload[116] = 0x01; // plural key length
+        payload[117] = 0x11; // "aa" (codes 1,1 — no pad needed)
+
+        let (singular, plural) = decode_names(&payload);
+        assert_eq!(singular, "aaa");
+        assert_eq!(
+            plural, "aa",
+            "explicit plural block must override the default"
+        );
+    }
+
+    #[test]
+    fn empty_payload_yields_empty_names() {
+        assert_eq!(decode_names(&[0u8; 8]), (String::new(), String::new()));
+    }
+}

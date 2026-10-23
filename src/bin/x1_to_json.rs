@@ -701,3 +701,90 @@ fn main() {
     });
     println!("{json}");
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn type27_short_form_is_a_design_delete() {
+        match decode_type27(&[0x00, 0x02]) {
+            Order::DeleteDesign {
+                design_slot,
+                subtype,
+            } => {
+                assert_eq!(design_slot, 2);
+                assert_eq!(subtype, 0);
+            }
+            other => panic!("expected DeleteDesign, got {other:?}"),
+        }
+        // A nonzero first byte is the not-yet-decoded subtype; the slot still
+        // reads from byte 1.
+        match decode_type27(&[0x80, 0x01]) {
+            Order::DeleteDesign {
+                design_slot,
+                subtype,
+            } => {
+                assert_eq!(design_slot, 1);
+                assert_eq!(subtype, 0x80);
+            }
+            other => panic!("expected DeleteDesign, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn type27_long_form_is_surfaced_as_raw_design_save() {
+        let mut payload = vec![0u8; 34];
+        payload[2] = 0x07; // invariant marker observed in captured saves
+        payload[6] = 0x14;
+        match decode_type27(&payload) {
+            Order::DesignSave { payload_hex } => {
+                assert_eq!(payload_hex.split_whitespace().count(), 34);
+            }
+            other => panic!("expected DesignSave, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn research_change_splits_the_field_nibbles() {
+        match decode_type34(&[50, 0x21]) {
+            Order::ResearchChange {
+                research_percent,
+                current_field,
+                next_field,
+            } => {
+                assert_eq!(research_percent, 50);
+                assert_eq!(current_field, 1);
+                assert_eq!(next_field, 2);
+            }
+            other => panic!("expected ResearchChange, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn waypoint_repeat_reads_the_flag_and_9bit_fleet() {
+        match decode_type10(&[5, 0, 1, 0]) {
+            Order::WaypointRepeat { fleet_num, repeat } => {
+                assert_eq!(fleet_num, 5);
+                assert!(repeat);
+            }
+            other => panic!("expected WaypointRepeat, got {other:?}"),
+        }
+    }
+
+    // Known limitation: the long form of type-27 carries the full ship/starbase
+    // design (hull, slot fills, name) but the field layout is not yet decoded,
+    // so it is surfaced as raw hex. Pinned as an expected-fail until a
+    // component-varying oracle pins the slot tuples.
+    #[test]
+    #[ignore = "long-form type-27 design decoding is future work"]
+    fn long_form_type27_should_decode_design_fields() {
+        let mut payload = vec![0u8; 34];
+        payload[2] = 0x07;
+        payload[6] = 0x14;
+        assert!(
+            !matches!(decode_type27(&payload), Order::DesignSave { .. }),
+            "long-form design should decode to structured fields"
+        );
+    }
+}
