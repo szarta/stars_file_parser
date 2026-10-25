@@ -384,6 +384,31 @@ enum Order {
     /// decoding is pending dedicated component-varying oracle runs.
     DesignSave { payload_hex: String },
 
+    /// Type-2: a fleet in orbit is being given its first movement waypoint.
+    ///
+    /// Emitted immediately before the fleet's type-4 WaypointAdd (waypoint_nr=1)
+    /// and only for a fleet that is currently orbiting a planet (not already
+    /// en route); it records which planet the fleet is leaving. Confirmed on 26
+    /// real records across two games: the fleet always matches the paired
+    /// WaypointAdd, and the planet always matches that fleet's orbit in the
+    /// corresponding `.mN` turn file.
+    ///
+    /// 8-byte payload. Two 2-byte slots carry the fleet_num (9-bit) and the
+    /// orbited planet index (full u16); `order_flag` (b4) selects the order:
+    /// 0x12 = fleet in bytes 0-1, 0x21 = fleet in bytes 2-3. b5 is always 0x08;
+    /// the trailing two bytes vary and are not yet decoded — both surfaced raw
+    /// rather than guessed.
+    FleetDepartOrbit {
+        fleet_num: u16,
+        planet_idx: u16,
+        /// b4: 0x12 = fleet in bytes 0-1, 0x21 = fleet in bytes 2-3.
+        order_flag: u8,
+        /// b5, always observed 0x08; meaning not yet confirmed.
+        b5: u8,
+        /// Trailing bytes (b6 onward); vary between records, not yet decoded.
+        tail_hex: String,
+    },
+
     /// Unknown or not-yet-decoded record type.
     Unknown {
         record_type: u16,
@@ -475,6 +500,33 @@ fn decode_waypoint_record(
         target_type,
         transport,
     )
+}
+
+/// Read a 9-bit fleet number from a 2-byte slot at `off` (low byte + bit 0 of
+/// the high byte), matching the waypoint records' fleet encoding.
+fn fleet9_at(p: &[u8], off: usize) -> u16 {
+    if off + 2 > p.len() {
+        return 0;
+    }
+    (p[off] as u16) | (((p[off + 1] & 1) as u16) << 8)
+}
+
+fn decode_type2(p: &[u8]) -> Order {
+    let order_flag = if p.len() > 4 { p[4] } else { 0 };
+    // order_flag selects which slot is the fleet; the other is the planet.
+    let (fleet_num, planet_idx) = if order_flag == 0x21 {
+        (fleet9_at(p, 2), read_u16_le(p, 0))
+    } else {
+        // 0x12 (and any other value) → fleet in bytes 0-1.
+        (fleet9_at(p, 0), read_u16_le(p, 2))
+    };
+    Order::FleetDepartOrbit {
+        fleet_num,
+        planet_idx,
+        order_flag,
+        b5: if p.len() > 5 { p[5] } else { 0 },
+        tail_hex: hex(if p.len() > 6 { &p[6..] } else { &[] }),
+    }
 }
 
 fn decode_type4(p: &[u8]) -> Order {
@@ -669,6 +721,7 @@ fn main() {
                 }
             }
             1 => orders.push(decode_type1(&rec.payload)),
+            2 => orders.push(decode_type2(&rec.payload)),
             3 => orders.push(decode_type3(&rec.payload)),
             4 => orders.push(decode_type4(&rec.payload)),
             5 => orders.push(decode_type5(&rec.payload)),
@@ -742,6 +795,51 @@ mod tests {
                 assert_eq!(payload_hex.split_whitespace().count(), 34);
             }
             other => panic!("expected DesignSave, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn type2_decodes_fleet_and_orbited_planet_both_orderings() {
+        // order_flag 0x21: planet in bytes 0-1, fleet (9-bit) in bytes 2-3.
+        match decode_type2(&[0xa4, 0x01, 0x35, 0x0c, 0x21, 0x08, 0xfa, 0x00]) {
+            Order::FleetDepartOrbit {
+                fleet_num,
+                planet_idx,
+                order_flag,
+                b5,
+                tail_hex,
+            } => {
+                assert_eq!(fleet_num, 53);
+                assert_eq!(planet_idx, 420);
+                assert_eq!(order_flag, 0x21);
+                assert_eq!(b5, 0x08);
+                assert_eq!(tail_hex, "fa 00");
+            }
+            other => panic!("expected FleetDepartOrbit, got {other:?}"),
+        }
+        // order_flag 0x12: fleet (9-bit) in bytes 0-1, planet in bytes 2-3.
+        match decode_type2(&[0x44, 0x0c, 0xfc, 0x01, 0x12, 0x08, 0xfa, 0x00]) {
+            Order::FleetDepartOrbit {
+                fleet_num,
+                planet_idx,
+                ..
+            } => {
+                assert_eq!(fleet_num, 68);
+                assert_eq!(planet_idx, 508);
+            }
+            other => panic!("expected FleetDepartOrbit, got {other:?}"),
+        }
+        // 9-bit fleet: bit 0 of the high byte extends the fleet number past 255.
+        match decode_type2(&[0xf7, 0x01, 0x18, 0x16, 0x21, 0x08, 0xfa, 0x00]) {
+            Order::FleetDepartOrbit {
+                fleet_num,
+                planet_idx,
+                ..
+            } => {
+                assert_eq!(fleet_num, 24);
+                assert_eq!(planet_idx, 503);
+            }
+            other => panic!("expected FleetDepartOrbit, got {other:?}"),
         }
     }
 
