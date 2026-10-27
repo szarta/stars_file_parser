@@ -4,17 +4,23 @@
 // FUN_1040_45a0, and FUN_1040_4880 in stars.exe.
 //
 // All names — dropdown presets, 24 AI race names, and user-typed — use the same
-// nibble-packing algorithm at payload[112..].  The layout is identical between
-// `.r1` race files and `.m1`–`.m16` player turn files (verified 2026-04-25 via
-// 16-player collision-resolution oracle in
-// `stars-reborn-research/original/all_human_players_{rabbitoid,humanoid}/`).
+// nibble-packing algorithm.  The layout is identical between `.r1` race files
+// and `.m1`–`.m16` player turn files.
 //
 // Layout at payload[112..]:
-//   [112]      : 0x00 constant
-//   [113]      : singular key length
-//   [114..]    : singular key bytes (nibble-packed encoded name)
-//   [114+n]    : plural key length (0 = absent; default to singular + 's')
-//   [115+n..]  : plural key bytes
+//   [112]      : R = length of the player-relations array that follows (bytes)
+//   [113..113+R]: relations array — one byte per player (the player's own slot
+//                 is 0x00).  R is 0 when absent: standalone `.r1` race files and
+//                 any block without game context.  In a game turn file R equals
+//                 the player count, so the name section shifts right by R.
+//   [113+R]    : singular key length
+//   [113+R+1..]: singular key bytes (nibble-packed encoded name)
+//   […+n]      : plural key length (0 = absent; default to singular + 's')
+//   […+n+1..]  : plural key bytes
+//
+// NOTE: R was previously documented as a "0x00 constant" because the player-1
+// `.m1` block and `.r1` files all have R=0; that garbled every other player's
+// block, where R > 0 (confirmed across try2, ai_games, normally_played_game).
 //
 // Encoding: each character maps to a code; codes are nibble-packed
 // high-nibble-first; odd nibble counts get a trailing 0xF pad nibble.
@@ -140,7 +146,20 @@ pub fn decode_names(payload: &[u8]) -> (String, String) {
         return (String::new(), String::new());
     }
 
-    let (singular, plural_start) = match decode_name_block(payload, base + 1) {
+    // payload[112] is the length (in bytes) of an intervening player-relations
+    // array — one byte per player (the player's own slot is 0x00), appended
+    // before the name section.  It is 0 only when the array is absent, in which
+    // case the name begins immediately at 113.  The player-1 .m1 block happens
+    // to have a 0-length array, which is why hard-coding base+1 decoded that
+    // block but garbled every other player's block (confirmed across try2,
+    // ai_games, normally_played_game: the byte equals the game's player count).
+    let relations_len = payload[base] as usize;
+    let name_start = base + 1 + relations_len;
+    if name_start >= payload.len() {
+        return (String::new(), String::new());
+    }
+
+    let (singular, plural_start) = match decode_name_block(payload, name_start) {
         Some(pair) => pair,
         None => return (String::new(), String::new()),
     };
@@ -166,7 +185,7 @@ mod tests {
     #[test]
     fn plural_defaults_to_singular_plus_s_when_absent() {
         let mut payload = vec![0u8; 117];
-        payload[112] = 0x00; // constant
+        payload[112] = 0x00; // relations array length 0 (name starts at 113)
         payload[113] = 0x02; // singular key length
         payload[114] = 0x11; // "aaa"
         payload[115] = 0x1f;
@@ -175,6 +194,31 @@ mod tests {
         let (singular, plural) = decode_names(&payload);
         assert_eq!(singular, "aaa");
         assert_eq!(plural, "aaas");
+    }
+
+    #[test]
+    fn skips_nonzero_relations_array_before_the_name() {
+        // A game turn file for a non-player-1 block: payload[112] is the length
+        // of the player-relations array (one byte per player, own slot 0x00),
+        // and the name section begins only after it.  Here: 3 players, so the
+        // name sits at 113 + 3 = 116, not 113.
+        let mut payload = vec![0u8; 122];
+        payload[112] = 0x03; // relations array length (3 players)
+        payload[113] = 0x02; // player 0: neutral
+        payload[114] = 0x00; // player 1: self
+        payload[115] = 0x02; // player 2: neutral
+        payload[116] = 0x02; // singular key length → "aaa"
+        payload[117] = 0x11;
+        payload[118] = 0x1f;
+        payload[119] = 0x01; // plural key length → "aa"
+        payload[120] = 0x11;
+
+        let (singular, plural) = decode_names(&payload);
+        assert_eq!(
+            singular, "aaa",
+            "name must be read after the relations array"
+        );
+        assert_eq!(plural, "aa");
     }
 
     #[test]
