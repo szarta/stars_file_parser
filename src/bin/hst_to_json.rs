@@ -41,6 +41,17 @@ struct Planet {
     planet_index: u16,
     /// Owner ID (high 5 bits; 31 = uninhabited, 0 = player 1, …).
     owner_id: u8,
+    /// Raw PlanetInfo flags word (b2-3). Surfaced raw because most bits are not
+    /// yet decoded; the confirmed ones are exposed as named fields below.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    flags: Option<u16>,
+    /// Homeworld marker: bit 7 (0x80) of the PlanetInfo flags word. Confirmed on
+    /// a 16-player, two-worlds-each corpus game (every player's higher-population
+    /// starting world has it set; its second starting world does not), and
+    /// disambiguated from a "has starbase" flag on a fully-expanded game (6
+    /// players owning up to 212 planets each, yet still exactly one bit-7 planet
+    /// per player — a starbase flag would be set on many).
+    homeworld: bool,
     /// Ironium   concentration (1–119 confirmed; 0 = uninhabited/depleted).
     #[serde(skip_serializing_if = "Option::is_none")]
     conc_ironium: Option<u8>,
@@ -111,6 +122,8 @@ fn decode_type13(p: &[u8]) -> Option<Planet> {
     let raw_word = u16::from_le_bytes([p[0], p[1]]);
     let planet_index = raw_word & 0x7FF;
     let owner_id = ((raw_word >> 11) & 0x1F) as u8;
+    let flags = read_u16_le(p, 2);
+    let homeworld = flags.map(|f| f & 0x80 != 0).unwrap_or(false);
 
     // b4 = DepletionLength: three 2-bit fields encoding byte-widths of depletion
     // accumulators inserted before the concentration bytes.
@@ -154,6 +167,8 @@ fn decode_type13(p: &[u8]) -> Option<Planet> {
         return Some(Planet {
             planet_index,
             owner_id,
+            flags,
+            homeworld,
             conc_ironium,
             conc_boranium,
             conc_germanium,
@@ -172,6 +187,8 @@ fn decode_type13(p: &[u8]) -> Option<Planet> {
         return Some(Planet {
             planet_index,
             owner_id,
+            flags,
+            homeworld,
             conc_ironium,
             conc_boranium,
             conc_germanium,
@@ -205,6 +222,8 @@ fn decode_type13(p: &[u8]) -> Option<Planet> {
     Some(Planet {
         planet_index,
         owner_id,
+        flags,
+        homeworld,
         conc_ironium,
         conc_boranium,
         conc_germanium,
@@ -262,4 +281,34 @@ fn main() {
     });
 
     println!("{json}");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Minimal type-13 record: PlanetIDAndOwnerID, the flags word, a zero
+    /// DepletionLength, then the six concentration/hab bytes. Length 11 keeps it
+    /// on the uncolonized path (surface decode is irrelevant to the flags word).
+    fn type13(flags: u16) -> Vec<u8> {
+        let raw_word: u16 = 354; // planet 354, owner 0 (player 1) in the high 5 bits
+        let [wl, wh] = raw_word.to_le_bytes();
+        let [fl, fh] = flags.to_le_bytes();
+        vec![wl, wh, fl, fh, 0x00, 30, 10, 20, 50, 50, 50]
+    }
+
+    #[test]
+    fn homeworld_bit7_distinguishes_homeworld() {
+        // Flags observed in a 16-player, two-worlds-each corpus game: every
+        // player's homeworld carried 0x2b87 and its second world 0x2b07 — a
+        // single-bit difference at bit 7 (0x80).
+        let home = decode_type13(&type13(0x2b87)).expect("decode homeworld");
+        let second = decode_type13(&type13(0x2b07)).expect("decode second world");
+
+        assert_eq!(home.planet_index, 354);
+        assert_eq!(home.owner_id, 0);
+        assert_eq!(home.flags, Some(0x2b87));
+        assert!(home.homeworld, "bit 7 set => homeworld");
+        assert!(!second.homeworld, "bit 7 clear => not a homeworld");
+    }
 }
