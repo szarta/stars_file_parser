@@ -1,40 +1,45 @@
-// EventsBlock (record type-12) decoding — partial.
+// EventsBlock (record type-12) decoding.
 //
-// EventsBlock holds the player's per-turn message log: each event references a
-// message-template ID (0..386) plus argument bytes that fill in the template's
-// `\p`, `\s`, `\i`, etc. format codes.  The complete template table comes from
-// Wasp's 2010 HWF post and is shipped as ``data/messages.json`` (loaded at
-// build time via ``include_str!``).
+// One type-12 record holds the player's whole per-turn message log: a run of
+// variable-length events, each referencing a message template (0..386) from
+// Wasp's 2010 HWF table (shipped as ``data/messages.json``) plus argument bytes
+// that fill the template's `\p`, `\s`, `\i`, … format codes.
 //
-// What's confirmed about per-event byte layout:
-//   * First u16 LE = message identifier.  Low 10 bits = msg ID; high 6 bits
-//     are non-zero in some samples (purpose unknown — possibly an event
-//     category or addressee tag).  Use ``mid & 0x3FF`` to look up the format
-//     string.
-//   * Next u16 LE = "object" reference (planet idx, fleet ref, race idx) when
-//     the message is location-bound, or one of the sentinels ``0xFFFF``,
-//     ``0xFFFE``, ``0xFFFC`` when it isn't.  Confirmed values:
-//       0xFFFF — tip messages (no location)
-//       0xFFFE — research / non-located events
-//       0xFFFC — winner declarations (msgs 181/182)
-//   * After that come N argument bytes whose width-per-arg depends on the
-//     individual format codes — not yet fully reverse-engineered.  Confirmed
-//     widths so far on small maps (planet idx < 256):
-//       \p (planet)     = 1 byte (planet idx)
-//       \Z (race name)  = 1 byte (race idx)
-//       \j (tech field) = 1 byte
-//       \i (integer)    = 1 or 2 bytes (context-dependent)
-//   * On large maps (>256 planets) the planet ref appears to widen to 2 bytes
-//     with a leading "type" byte (sample: msg 169 encoded as
-//     ``a9 02 94 01 94 01``).  Not yet specified.
+// Per-event layout
+// ----------------
+//   * Bytes 0-1 (LE u16) = ``msg_word``:
+//       - bits 0-8  (``& 0x1FF``) = message-template ID (0..386),
+//       - bit  9     (``0x200``)  = WIDE-REFERENCE flag: when set, object-ref
+//         arguments (`\p`) are 2 bytes instead of 1 — this is how maps with
+//         >256 planets widen the ref, NOT a separate leading type byte,
+//       - bits 10-15 (``>> 10``)  = a tag whose meaning is still unknown
+//         (seen = 1 on msg 345).
+//     This 9-bit split is confirmed by the large-map homeworld sample
+//     ``a9 02 15 01 15 01``: ``0x02a9 & 0x1FF`` = 169 (home-planet message) with
+//     the wide-ref bit set and a 2-byte planet ref 0x0115 = 277, whereas the
+//     old 10-bit mask gave the out-of-range id 681.
+//   * Bytes 2-3 (LE u16) = ``loc``: the object the message is bound to (planet
+//     idx, fleet/race ref) or a sentinel when it is not — ``0xFFFF`` (tips),
+//     ``0xFFFE`` (research / non-located), ``0xFFFC`` (winner declarations).
+//     Always 2 bytes.
+//   * Then one value per `\X` arg code in the template, in order.
 //
-// Because of those uncertainties, this module deliberately surfaces:
-//   1. The message ID and its format string (always reliable),
-//   2. The full raw payload bytes (for downstream R&D),
-//   3. The first 4-byte header decoded as (msg_id, loc/sentinel),
-// rather than attempting to walk the full event list.  R5.2 winner-message
-// detection only needs (msg_id, race_idx) which is cleanly extractable from a
-// 5-byte event.
+// Per-arg byte widths (confirmed)
+// -------------------------------
+//   \p (planet)     = 1 byte, or 2 when the wide-reference bit is set.
+//   \Z (race idx)   = 1 byte.
+//   \j (tech field) = 1 byte.
+// Every other code (\i, \s, \n, \l, \L, \f, \F, \k, \m, \v00, \vkT, \img, …) has
+// an unconfirmed width — \i alone is 1 byte in some messages (tech level, msg
+// 80) and 2 in others (resources, msg 345), so widths cannot be inferred from
+// the format string without a varied oracle corpus (see the follow-up task and
+// knowledge/findings/events_block.rst).
+//
+// The walker therefore decodes every event's 4-byte header (always reliable)
+// and consumes arguments while the codes have confirmed widths; the first time
+// it meets an unknown-width code it stops and surfaces the remaining bytes as a
+// raw tail rather than guessing a boundary (ADR-0001). Turn-start logs (tips +
+// home planet + production-queue-empty, all ARGS=0 or `\p`) decode in full.
 
 use serde::Serialize;
 use std::collections::HashMap;
@@ -69,58 +74,177 @@ pub fn template_table() -> &'static HashMap<u16, MessageTemplate> {
     })
 }
 
-/// Look up a message template by its ID.  Strips the high-6-bits tag from
-/// the raw u16 so callers can pass the unmasked word.
+/// Mask for the 9-bit message-template id within a ``msg_word``.
+const MSG_ID_MASK: u16 = 0x1FF;
+/// Wide-reference flag (bit 9): object-ref args (`\p`) are 2 bytes when set.
+const WIDE_REF_FLAG: u16 = 0x200;
+
+/// Look up a message template by a raw ``msg_word``: the 9-bit id is extracted
+/// (the wide-ref flag and the high tag are stripped) before the lookup.
 pub fn lookup(raw_mid: u16) -> Option<&'static MessageTemplate> {
-    template_table().get(&(raw_mid & 0x3FF))
+    template_table().get(&(raw_mid & MSG_ID_MASK))
 }
 
-/// One EventsBlock (type-12) record, partially decoded.
-///
-/// `header_msg_id` is the masked low-10-bit message ID at byte 0; on real
-/// records this is reliably the first event's template ID.  `header_loc` is
-/// the u16 LE word at offset 2 (planet/fleet/race ref or sentinel).
-/// `payload_hex` is the full record payload — parse remaining events
-/// downstream once the per-arg-type widths are nailed down.
+/// Byte width of one `\X` argument, given the event's wide-reference flag.
+/// Returns `None` for any code whose width is not yet confirmed, which stops
+/// the walker (see module docs).
+fn arg_width(code: &str, wide_ref: bool) -> Option<usize> {
+    match code {
+        "\\p" => Some(if wide_ref { 2 } else { 1 }), // planet idx (widens on >256-planet maps)
+        "\\Z" => Some(1),                            // race idx
+        "\\j" => Some(1),                            // tech field (0-5)
+        _ => None,                                   // unconfirmed width
+    }
+}
+
+/// Extract the template's `\X` format codes in order (each as e.g. `"\\p"`).
+/// A multi-character code such as `\v00` is returned as its backslash+letter
+/// stem (`"\\v"`); since every such code currently has an unknown width that is
+/// enough for the walker to stop on it.
+fn arg_codes(fmt: &str) -> Vec<String> {
+    let bytes = fmt.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'\\' && i + 1 < bytes.len() && bytes[i + 1].is_ascii_alphabetic() {
+            out.push(format!("\\{}", bytes[i + 1] as char));
+            i += 2;
+        } else {
+            i += 1;
+        }
+    }
+    out
+}
+
+fn read_uint_le(p: &[u8], off: usize, width: usize) -> u32 {
+    let mut v = 0u32;
+    for i in 0..width {
+        v |= (p[off + i] as u32) << (8 * i);
+    }
+    v
+}
+
+/// One decoded argument of an event.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct EventArg {
+    /// The format code this value filled, e.g. `"\\p"`.
+    pub code: String,
+    /// Decoded value (planet idx / race idx / tech field).
+    pub value: u32,
+    /// Number of bytes consumed.
+    pub bytes: u8,
+}
+
+/// One decoded event within a type-12 record.
+#[derive(Debug, Serialize)]
+pub struct DecodedEvent {
+    /// 9-bit message-template id (bytes 0-1 `& 0x1FF`).
+    pub msg_id: u16,
+    /// High tag (bits 10-15); meaning unknown, surfaced for research.
+    pub msg_tag: u16,
+    /// Wide-reference flag (bit 9): object-ref args are 2 bytes.
+    pub wide_ref: bool,
+    /// u16 LE at bytes 2-3: bound object idx or a sentinel
+    /// (0xFFFF/0xFFFE/0xFFFC).
+    pub loc: u16,
+    /// Template format string, if the id is known.
+    pub fmt: Option<String>,
+    /// Number of `\X` args the template declares.
+    pub args_expected: Option<u8>,
+    /// Arguments decoded with confirmed widths (may be a prefix of all args).
+    pub args: Vec<EventArg>,
+    /// True when the id is known and every one of its args was decoded; false
+    /// when an unknown-width code (or a short buffer) stopped decoding — the
+    /// undecoded bytes from this event onward are in `EventsRecord.tail_hex`.
+    pub fully_decoded: bool,
+}
+
+/// One EventsBlock (type-12) record: the walked event list plus, if the walk
+/// stopped early, the raw bytes it could not resolve.
 #[derive(Debug, Serialize)]
 pub struct EventsRecord {
-    /// Low-10-bit message ID parsed from bytes 0-1 of the record.
-    pub header_msg_id: u16,
-    /// High-6-bit tag from bytes 0-1 (purpose TBD; non-zero on some events).
-    pub header_msg_tag: u16,
-    /// u16 LE at bytes 2-3.  Planet/fleet/race ref, or sentinel
-    /// (0xFFFF/0xFFFE/0xFFFC).
-    pub header_loc: u16,
-    /// Format string of the header message, if a template is known.
-    pub header_fmt: Option<String>,
-    /// Number of `\X` arguments the header template expects.
-    pub header_args: Option<u8>,
+    /// Events decoded in file order. The last entry has `fully_decoded = false`
+    /// when the walk stopped inside it.
+    pub events: Vec<DecodedEvent>,
+    /// Bytes from the first unresolved argument onward, as lowercase hex;
+    /// `None` when the whole record decoded.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tail_hex: Option<String>,
     /// Full raw payload as lowercase hex (no separators).
     pub payload_hex: String,
 }
 
-/// Decode a type-12 EventsBlock payload into a partially-parsed record.
+fn to_hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// Decode a type-12 EventsBlock payload by walking its event list.
 pub fn decode_events_block(payload: &[u8]) -> EventsRecord {
-    let header_word = if payload.len() >= 2 {
-        u16::from_le_bytes([payload[0], payload[1]])
-    } else {
-        0
-    };
-    let header_loc = if payload.len() >= 4 {
-        u16::from_le_bytes([payload[2], payload[3]])
-    } else {
-        0
-    };
-    let mid = header_word & 0x3FF;
-    let tag = header_word >> 10;
-    let tmpl = lookup(header_word);
+    let mut events = Vec::new();
+    let mut tail_hex = None;
+    let mut off = 0usize;
+
+    while off + 4 <= payload.len() {
+        let msg_word = u16::from_le_bytes([payload[off], payload[off + 1]]);
+        let loc = u16::from_le_bytes([payload[off + 2], payload[off + 3]]);
+        let msg_id = msg_word & MSG_ID_MASK;
+        let wide_ref = msg_word & WIDE_REF_FLAG != 0;
+        let msg_tag = msg_word >> 10;
+        let tmpl = template_table().get(&msg_id);
+
+        // Consume one value per format code while widths are known.
+        let codes = tmpl.map(|t| arg_codes(&t.fmt)).unwrap_or_default();
+        let mut args = Vec::new();
+        let mut cur = off + 4;
+        let mut ok = tmpl.is_some();
+        if ok {
+            for code in &codes {
+                match arg_width(code, wide_ref) {
+                    Some(w) if cur + w <= payload.len() => {
+                        args.push(EventArg {
+                            code: code.clone(),
+                            value: read_uint_le(payload, cur, w),
+                            bytes: w as u8,
+                        });
+                        cur += w;
+                    }
+                    _ => {
+                        ok = false;
+                        break;
+                    }
+                }
+            }
+        }
+
+        events.push(DecodedEvent {
+            msg_id,
+            msg_tag,
+            wide_ref,
+            loc,
+            fmt: tmpl.map(|t| t.fmt.clone()),
+            args_expected: tmpl.map(|t| t.args),
+            args,
+            fully_decoded: ok,
+        });
+
+        if !ok {
+            // Unknown-width code (or unknown id): the boundary after `cur` is
+            // unknown, so stop and surface the remainder rather than guess.
+            tail_hex = Some(to_hex(&payload[cur..]));
+            break;
+        }
+        off = cur;
+    }
+
+    // Trailing bytes too short to form a header (padding / unresolved).
+    if tail_hex.is_none() && off < payload.len() {
+        tail_hex = Some(to_hex(&payload[off..]));
+    }
+
     EventsRecord {
-        header_msg_id: mid,
-        header_msg_tag: tag,
-        header_loc,
-        header_fmt: tmpl.map(|t| t.fmt.clone()),
-        header_args: tmpl.map(|t| t.args),
-        payload_hex: payload.iter().map(|b| format!("{b:02x}")).collect(),
+        events,
+        tail_hex,
+        payload_hex: to_hex(payload),
     }
 }
 
@@ -131,7 +255,6 @@ mod tests {
     #[test]
     fn template_table_has_known_entries() {
         let t = template_table();
-        // Spot-check a few well-known IDs.
         assert_eq!(t.get(&169).map(|x| x.args), Some(1)); // "Your home planet is \p"
         assert_eq!(t.get(&181).map(|x| x.args), Some(1)); // "\Z winner"
         assert_eq!(t.get(&182).map(|x| x.args), Some(0)); // "you have been declared the winner"
@@ -139,23 +262,82 @@ mod tests {
     }
 
     #[test]
-    fn decode_winner_event() {
-        // Real bytes from 900_turns/Game.m1 type-12 record:
-        //   b5 00 fc ff 02  → msg 181 with race-idx 2 winning.
-        let r = decode_events_block(&[0xb5, 0x00, 0xfc, 0xff, 0x02]);
-        assert_eq!(r.header_msg_id, 181);
-        assert_eq!(r.header_msg_tag, 0);
-        assert_eq!(r.header_loc, 0xfffc);
-        assert_eq!(r.header_args, Some(1));
+    fn walks_turn_one_log_fully() {
+        // Real type-12 payload from experiments/Game.m1: four ARGS=0 tips
+        // (127-130) then the home-planet message (169, \p) for planet 111.
+        let payload = [
+            0x7f, 0x00, 0xff, 0xff, // 127 tip
+            0x80, 0x00, 0xff, 0xff, // 128 tip
+            0x81, 0x00, 0xff, 0xff, // 129 tip
+            0x82, 0x00, 0xff, 0xff, // 130 tip
+            0xa9, 0x00, 0x6f, 0x00, 0x6f, // 169 home planet 111
+        ];
+        let r = decode_events_block(&payload);
+        assert_eq!(r.events.len(), 5);
+        assert!(r.tail_hex.is_none(), "turn-1 log decodes completely");
+        assert!(r.events.iter().all(|e| e.fully_decoded));
+        let home = &r.events[4];
+        assert_eq!(home.msg_id, 169);
+        assert!(!home.wide_ref);
+        assert_eq!(home.loc, 111);
+        assert_eq!(home.args, vec_arg("\\p", 111, 1));
     }
 
     #[test]
-    fn decode_homeworld_event() {
-        // Real bytes from original/Game.m1 (player 1, homeworld idx 68):
-        //   a9 00 44 00 44  → msg 169 with planet idx 68.
-        let r = decode_events_block(&[0xa9, 0x00, 0x44, 0x00, 0x44]);
-        assert_eq!(r.header_msg_id, 169);
-        assert_eq!(r.header_loc, 0x0044);
-        assert_eq!(r.header_args, Some(1));
+    fn large_map_home_planet_uses_the_wide_reference_flag() {
+        // experiments/.../medium_dense_selected: same four tips, then the home
+        // planet encoded a9 02 15 01 15 01 — bit 9 set, 2-byte planet ref 277.
+        let payload = [
+            0x7f, 0x00, 0xff, 0xff, 0x80, 0x00, 0xff, 0xff, 0x81, 0x00, 0xff, 0xff, 0x82, 0x00,
+            0xff, 0xff, 0xa9, 0x02, 0x15, 0x01, 0x15, 0x01,
+        ];
+        let r = decode_events_block(&payload);
+        assert_eq!(r.events.len(), 5);
+        assert!(r.tail_hex.is_none());
+        let home = &r.events[4];
+        assert_eq!(home.msg_id, 169, "9-bit mask recovers the id past the flag");
+        assert!(home.wide_ref, "bit 9 set");
+        assert_eq!(home.loc, 277);
+        assert_eq!(
+            home.args,
+            vec_arg("\\p", 277, 2),
+            "planet ref widened to 2 bytes"
+        );
+    }
+
+    #[test]
+    fn decodes_winner_declaration() {
+        // b5 00 fc ff 02 → msg 181, \Z race idx 2.
+        let r = decode_events_block(&[0xb5, 0x00, 0xfc, 0xff, 0x02]);
+        assert_eq!(r.events.len(), 1);
+        let e = &r.events[0];
+        assert_eq!(e.msg_id, 181);
+        assert_eq!(e.msg_tag, 0);
+        assert_eq!(e.loc, 0xfffc);
+        assert!(e.fully_decoded);
+        assert_eq!(e.args, vec_arg("\\Z", 2, 1));
+        assert!(r.tail_hex.is_none());
+    }
+
+    #[test]
+    fn stops_at_an_unknown_width_code_and_keeps_the_tail() {
+        // 50 00 fe ff 0d 01 02 → msg 80 "Tech Level \i for \j…"; \i width is
+        // unconfirmed, so the walk stops before the args and banks the tail.
+        let r = decode_events_block(&[0x50, 0x00, 0xfe, 0xff, 0x0d, 0x01, 0x02]);
+        assert_eq!(r.events.len(), 1);
+        let e = &r.events[0];
+        assert_eq!(e.msg_id, 80);
+        assert_eq!(e.loc, 0xfffe);
+        assert!(!e.fully_decoded, "\\i has no confirmed width");
+        assert!(e.args.is_empty());
+        assert_eq!(r.tail_hex.as_deref(), Some("0d0102"));
+    }
+
+    fn vec_arg(code: &str, value: u32, bytes: u8) -> Vec<EventArg> {
+        vec![EventArg {
+            code: code.to_string(),
+            value,
+            bytes,
+        }]
     }
 }
