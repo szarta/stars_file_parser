@@ -5,18 +5,19 @@ race files, and plain-text oracle dumps.
 
 ## Tools
 
-| Binary         | Input                       | Description                                               |
-| -------------- | --------------------------- | --------------------------------------------------------- |
-| `r1_to_json`   | `.r1` race file             | Converts a Stars! race file to JSON                       |
-| `json_to_r1`   | `race.json`                 | Writes a Stars!-loadable `.r1` from a race JSON           |
-| `m1_to_json`   | `.mN` turn file             | Extracts full player turn state from a Stars! player file |
-| `xy_to_json`   | `.xy` universe file         | Decodes universe parameters from a Stars! map file        |
-| `json_to_def`  | `gamedef.json`              | Writes a `.def` file for `stars.exe -a` universe creation |
-| `map_to_json`  | `.map` universe dump        | Parses a Stars! universe text dump to JSON                |
-| `pla_to_json`  | `.pla` / `.pNN` planet dump | Parses a Stars! planet text dump to JSON (basic or rich)  |
-| `fle_to_json`  | `.fle` / `.fNN` fleet dump  | Parses a Stars! fleet text dump to JSON (basic or rich)   |
-| `dump_records` | any Stars! binary           | Debug: print record types and lengths                     |
-| `dump_type16`  | `.mN` turn file             | Debug: print raw type-16 FleetBlock payloads              |
+| Binary         | Input                       | Description                                                       |
+| -------------- | --------------------------- | ----------------------------------------------------------------- |
+| `r1_to_json`   | `.r1` race file             | Converts a Stars! race file to JSON                               |
+| `json_to_r1`   | `race.json`                 | Writes a Stars!-loadable `.r1` from a race JSON                   |
+| `m1_to_json`   | `.mN` turn file             | Extracts full player turn state from a Stars! player file         |
+| `hst_to_json`  | `.hst` host file            | Extracts the omniscient universe state (all players, all planets) |
+| `xy_to_json`   | `.xy` universe file         | Decodes universe parameters from a Stars! map file                |
+| `json_to_def`  | `gamedef.json`              | Writes a `.def` file for `stars.exe -a` universe creation         |
+| `map_to_json`  | `.map` universe dump        | Parses a Stars! universe text dump to JSON                        |
+| `pla_to_json`  | `.pla` / `.pNN` planet dump | Parses a Stars! planet text dump to JSON (basic or rich)          |
+| `fle_to_json`  | `.fle` / `.fNN` fleet dump  | Parses a Stars! fleet text dump to JSON (basic or rich)           |
+| `dump_records` | any Stars! binary           | Debug: print record types and lengths                             |
+| `dump_type16`  | `.mN` turn file             | Debug: print raw type-16 FleetBlock payloads                      |
 
 ## Build
 
@@ -210,15 +211,14 @@ Reads a Stars! `.mN` player turn file and writes turn state JSON to stdout.
 m1_to_json <file.m1>
 ```
 
-**Also works on `.hst` host files.** The `.hst` shares the same record
-container format and uses the same type-13 `PlanetBlock` byte layout as
-`.mN`, so pointing `m1_to_json` at a `.hst` produces the omniscient
-universe view: every planet record (not just the ones any one player has
-scanned) is emitted, with full `gravity` / `temperature` / `radiation` /
-mineral concentration data. This is the recommended path for
-universe-wide oracle measurements until a dedicated `hst_to_json` exists
-— `.hst`-specific fields (cross-player state) will be missing or
-mis-decoded, but the planet records are correct.
+For the omniscient universe view from a `.hst` host file — every player and
+every planet, not one player's scanned subset — use `hst_to_json` (below). It
+shares the same block decoders as `m1_to_json`, so planet, fleet, design, and
+battle-plan records decode identically; it adds all players' race/tech blocks
+and surfaces host-only record types. Pointing `m1_to_json` at a `.hst` still
+works for a quick per-planet concentration pull (the record container and
+type-13 layout are shared), but it decodes only the first player's block and
+omits cross-player state.
 
 #### Output format
 
@@ -311,6 +311,36 @@ Each `transport_payload` resource op has `amount` (kT) and `action`
   non-terraformed planets.
 - **Fleet name**: not decoded (encoding not yet confirmed).
 - **Waypoint task payload**: only Transport (task_type=1) is decoded.
+
+### hst_to_json
+
+Reads a Stars! `.hst` host file and writes the omniscient universe state to
+stdout. The host file is the authoritative record of a game: it holds a type-6
+`PlayerBlock` for every player and a type-13 `PlanetBlock` for every planet (no
+scanner fog), so `hst_to_json` emits a universe-centric schema rather than the
+single-player view of `m1_to_json`.
+
+```sh
+hst_to_json <file.hst>
+```
+
+Top-level keys: `year`, `player_count`, `players` (id, homeworld, tech levels,
+race), `planet_count`, `planets` (every planet; `owner_id` 31 = uninhabited),
+`fleets`, `designs`, `battle_plans`, `objects` (raw type-43 `ObjectBlock` /
+Mystery Trader records, surfaced as hex — layout not yet decoded), and
+`record_summary` (count per record type, so host-only types beyond the decoded
+set are visible). A planet is a homeworld iff its index appears as some
+player's `homeworld_planet_idx`, which is authoritative here because every
+player's block is present.
+
+#### Known limitations
+
+- **Planet records**: same simplified decoder as `m1_to_json` (non-depleted,
+  non-terraformed planets decode fully).
+- **type-43 `ObjectBlock`**: surfaced as raw hex; field layout not yet confirmed.
+- **Per-player `planet_count`**: deliberately omitted — the type-6 bytes 2-3
+  field is not a per-player owned count in a `.hst`. Derive owned counts from
+  `planets` grouped by `owner_id`.
 
 ### xy_to_json
 

@@ -1,0 +1,1019 @@
+// Shared game-state block decoders.
+//
+// The record-container framing in `records.rs` splits a Stars! file into typed,
+// decrypted payloads; this module decodes the individual game-state blocks that
+// appear inside `.mN` player turn files, `.hst` host files, and (for the planet
+// block) `.xy` files.  The decoders and their record structs were originally
+// developed inside `bin/m1_to_json.rs`; they live here so every tool that reads
+// game state (notably `m1_to_json` and `hst_to_json`) shares one confirmed
+// implementation instead of duplicating offsets.
+//
+// Confirmed field offsets are documented in
+// stars-reborn-research/knowledge/findings/binary_file_format.rst and the
+// per-block findings it links (fleetblock_structure.rst, events_block.rst, the
+// starting_fleets_*.rst design corpus).
+//
+// Decode philosophy (ADR-0001): decode faithfully to the on-disk layout; where
+// a field's meaning or width is unconfirmed, surface the raw bytes rather than
+// invent a value.
+
+use serde::Serialize;
+
+use crate::name::decode_names;
+use crate::race::{race_from_payload, Race};
+
+// ── Little-endian read helpers ────────────────────────────────────────────────
+
+/// Read a little-endian u16 at `off`, or None if out of bounds.
+pub fn read_u16_le(p: &[u8], off: usize) -> Option<u16> {
+    if off + 2 <= p.len() {
+        Some(u16::from_le_bytes([p[off], p[off + 1]]))
+    } else {
+        None
+    }
+}
+
+/// Read a little-endian i16 at `off`, or None if out of bounds.
+pub fn read_i16_le(p: &[u8], off: usize) -> Option<i16> {
+    read_u16_le(p, off).map(|v| v as i16)
+}
+
+/// Read a 0–3 byte little-endian unsigned integer.  Returns None if 0 bytes or out of bounds.
+pub fn read_uint_le(p: &[u8], off: usize, width: usize) -> Option<u32> {
+    if width == 0 || off + width > p.len() {
+        return None;
+    }
+    let mut v = 0u32;
+    for i in 0..width {
+        v |= (p[off + i] as u32) << (8 * i);
+    }
+    Some(v)
+}
+
+// ── PlayerBlock (type-6) ───────────────────────────────────────────────────────
+
+/// Player/tech/race fields decoded from a type-6 PlayerBlock.
+///
+/// Confirmed layout (from Structure6.xml + oracle experiments):
+///   b0    : PlayerID
+///   b2-3  : PlanetCount (LE uint16)
+///   b8-9  : Homeworld planet index (LE uint16) — confirmed IT=73, JOAT=52
+///   b16-81: Race design fields — IDENTICAL to .r1 layout (confirmed 2026-04-13, R0.9)
+///   b26   : EnergyLevel       (IT=0, JOAT=3)
+///   b27   : WeaponsLevel      (IT=0, JOAT=3)
+///   b28   : PropulsionLevel   (IT=5, JOAT=3)
+///   b29   : ConstructionLevel (IT=5, JOAT=3)
+///   b30   : ElectronicsLevel  (IT=0, JOAT=3)
+///   b31   : BiologyLevel      (IT=0, JOAT=3)
+pub struct PlayerBlock {
+    /// Player ID (b0, 0-based).
+    pub player_id: u8,
+    /// Homeworld planet index (b8-9 LE uint16).
+    pub homeworld_planet_idx: Option<u16>,
+    /// Number of planets owned by this player (b2-3 LE uint16).
+    pub planet_count: Option<u16>,
+    /// Tech levels b26-31: [energy, weapons, propulsion, construction, electronics, biology].
+    pub techs: [Option<u8>; 6],
+    /// Full race spec (bytes 16-81 + name section at 112+), when the block is a
+    /// full player block (payload ≥ 32 bytes and race decode succeeds).
+    pub race: Option<Race>,
+}
+
+/// Decode a type-6 PlayerBlock.  The race spec and tech levels are only present
+/// in full player blocks (payload ≥ 32 bytes); callers that only want the ID can
+/// still read `player_id` from any non-empty block.
+pub fn decode_type6(p: &[u8]) -> PlayerBlock {
+    let player_id = if p.is_empty() { 0 } else { p[0] };
+    let homeworld_planet_idx = read_u16_le(p, 8);
+    let planet_count = read_u16_le(p, 2);
+    let techs = [
+        if p.len() > 26 { Some(p[26]) } else { None }, // energy
+        if p.len() > 27 { Some(p[27]) } else { None }, // weapons
+        if p.len() > 28 { Some(p[28]) } else { None }, // propulsion
+        if p.len() > 29 { Some(p[29]) } else { None }, // construction
+        if p.len() > 30 { Some(p[30]) } else { None }, // electronics
+        if p.len() > 31 { Some(p[31]) } else { None }, // biology
+    ];
+    let race = race_from_payload(p).ok().map(|mut r| {
+        let (name, plural) = decode_names(p);
+        r.name = name;
+        r.plural_name = plural;
+        // Icon index encoding at byte 6 is the same in .r1 and .m type-6
+        // (confirmed 2026-04-25 via the same-icon-different-name oracle):
+        // bits 3-7 = (icon_0idx + 1) & 0x1F, bits 0-2 = 0b111.
+        r.icon_index = (((p[6] >> 3) as u32).wrapping_sub(1)) & 0x1F;
+        r
+    });
+    PlayerBlock {
+        player_id,
+        homeworld_planet_idx,
+        planet_count,
+        techs,
+        race,
+    }
+}
+
+// ── PlanetBlock (type-13) ──────────────────────────────────────────────────────
+
+/// One planet record (type-13 PlanetBlock).
+///
+/// The record is variable-length (11 bytes uninhabited; colonised length depends
+/// on SurfaceLength byte b13 and PlanetInfo flags b2-3).  Surface minerals and
+/// the Installations block are decoded dynamically; only non-depleted, non-terraformed
+/// planets are fully supported in this simplified decoder.
+#[derive(Debug, Serialize)]
+pub struct PlanetRecord {
+    /// 0-based planet index (low 11 bits of the PlanetIDAndOwnerID word).
+    pub planet_index: u16,
+    /// Owner ID (high 5 bits of PlanetIDAndOwnerID word; 31 = nobody/uninhabited,
+    /// 0 = player 1, 1 = player 2, …).
+    pub owner_id: u8,
+    /// True if this is a colonised planet (record longer than 11 bytes).
+    pub colonized: bool,
+
+    // ── Present in both uninhabited and colonised records ─────────────────
+    /// Ironium   concentration (0–100) — b5.
+    pub conc_ironium: Option<u8>,
+    /// Boranium  concentration (0–100) — b6.
+    pub conc_boranium: Option<u8>,
+    /// Germanium concentration (0–100) — b7.
+    pub conc_germanium: Option<u8>,
+    /// Gravity index (0–100) — b8.
+    pub gravity: Option<u8>,
+    /// Temperature index (0–100; temp°C = (idx − 50) × 4) — b9.
+    pub temperature: Option<u8>,
+    /// Radiation (0–100 mR/yr) — b10.
+    pub radiation: Option<u8>,
+
+    // ── Colonised-only: surface minerals and population ───────────────────
+    // Offsets are computed from SurfaceLength byte (b13); valid for non-depleted,
+    // non-terraformed planets where b4=0 and Terraformed flag=0.
+    /// Surface ironium in kT (LE uint, width from SurfaceLength bits 0-1).
+    pub surface_ironium: Option<u32>,
+    /// Surface boranium in kT (LE uint, width from SurfaceLength bits 2-3).
+    pub surface_boranium: Option<u32>,
+    /// Surface germanium in kT (LE uint, width from SurfaceLength bits 4-5).
+    pub surface_germanium: Option<u32>,
+    /// Colony population in units of 100 colonists (LE uint, width from SurfaceLength bits 6-7).
+    pub population: Option<u32>,
+
+    // ── Colonised-only: Installations block (b22-24 for standard 0x6A layout) ──
+    // Decoded from the 3-byte Installations field: Mines in bits 0-11, Factories bits 12-23.
+    /// Mines (low 12 bits of the Installations field).
+    pub mines: Option<u16>,
+    /// Factories (high 12 bits of the Installations field).
+    pub factories: Option<u16>,
+    /// Defenses — low 12 bits of the 2-byte Defenses field.
+    pub defenses: Option<u16>,
+}
+
+/// Decode a type-13 PlanetBlock.  Returns None only for a payload too short to
+/// hold the PlanetIDAndOwnerID word.
+pub fn decode_type13(p: &[u8]) -> Option<PlanetRecord> {
+    if p.len() < 2 {
+        return None;
+    }
+    let raw_word = u16::from_le_bytes([p[0], p[1]]);
+    let planet_index = raw_word & 0x7FF; // low 11 bits
+    let owner_id = ((raw_word >> 11) & 0x1F) as u8; // high 5 bits; 31=nobody
+
+    // b4 = DepletionLength: three 2-bit fields encoding the byte-width of each mineral's
+    // depletion accumulator.  These bytes are inserted immediately after b4, before the
+    // concentration bytes.  Confirmed 2026-04-17 via T1→T2 diff: T2 has depl=0x15 (1 byte
+    // per mineral), shifting concentrations from b5→b8 and all downstream offsets by 3.
+    let depl = if p.len() > 4 { p[4] } else { 0 };
+    let iron_dw = (depl & 3) as usize;
+    let boran_dw = ((depl >> 2) & 3) as usize;
+    let germ_dw = ((depl >> 4) & 3) as usize;
+    let depl_total = iron_dw + boran_dw + germ_dw;
+
+    // Concentrations start at b5 + depl_total.
+    let cb = 5 + depl_total;
+    // Colonized records are longer than the uninhabited length (11 + depl_total bytes).
+    let colonized = p.len() > 11 + depl_total;
+
+    let base = PlanetRecord {
+        planet_index,
+        owner_id,
+        colonized,
+        conc_ironium: if p.len() > cb { Some(p[cb]) } else { None },
+        conc_boranium: if p.len() > cb + 1 {
+            Some(p[cb + 1])
+        } else {
+            None
+        },
+        conc_germanium: if p.len() > cb + 2 {
+            Some(p[cb + 2])
+        } else {
+            None
+        },
+        gravity: if p.len() > cb + 3 {
+            Some(p[cb + 3])
+        } else {
+            None
+        },
+        temperature: if p.len() > cb + 4 {
+            Some(p[cb + 4])
+        } else {
+            None
+        },
+        radiation: if p.len() > cb + 5 {
+            Some(p[cb + 5])
+        } else {
+            None
+        },
+        surface_ironium: None,
+        surface_boranium: None,
+        surface_germanium: None,
+        population: None,
+        mines: None,
+        factories: None,
+        defenses: None,
+    };
+    // SurfaceLength byte sits at b13 + depl_total; data follows at b14 + depl_total.
+    let surf_len_off = 13 + depl_total;
+    if !colonized || p.len() <= surf_len_off {
+        return Some(base);
+    }
+
+    // SurfaceLength byte encodes four 2-bit widths (LSB-first):
+    //   bits 0-1 = IroniumWidth, 2-3 = BoraniumWidth, 4-5 = GermaniumWidth, 6-7 = PopWidth
+    let surf_len = p[surf_len_off];
+    let iron_w = (surf_len & 3) as usize;
+    let boran_w = ((surf_len >> 2) & 3) as usize;
+    let germ_w = ((surf_len >> 4) & 3) as usize;
+    let pop_w = ((surf_len >> 6) & 3) as usize;
+
+    let mut off = 14 + depl_total;
+    let surface_ironium = read_uint_le(p, off, iron_w);
+    off += iron_w;
+    let surface_boranium = read_uint_le(p, off, boran_w);
+    off += boran_w;
+    let surface_germanium = read_uint_le(p, off, germ_w);
+    off += germ_w;
+    let population = read_uint_le(p, off, pop_w);
+    off += pop_w;
+
+    // Installations block: present when PlanetInfo bit 11 (Installations) is set.
+    let planet_info = u16::from_le_bytes([p[2], p[3]]);
+    let has_inst = (planet_info >> 11) & 1 == 1;
+    let mut mines = None;
+    let mut factories = None;
+    let mut defenses = None;
+    if has_inst {
+        off += 1; // ExcessPopulation (1 byte)
+                  // Installations: 3 bytes, Mines in bits 0-11, Factories in bits 12-23.
+        if off + 3 <= p.len() {
+            let raw = (p[off] as u32) | ((p[off + 1] as u32) << 8) | ((p[off + 2] as u32) << 16);
+            mines = Some((raw & 0xFFF) as u16);
+            factories = Some(((raw >> 12) & 0xFFF) as u16);
+            off += 3;
+        }
+        // Defenses: 2 bytes, low 12 bits = defenses count.
+        if off + 2 <= p.len() {
+            let raw = (p[off] as u16) | ((p[off + 1] as u16) << 8);
+            defenses = Some(raw & 0xFFF);
+        }
+    }
+
+    Some(PlanetRecord {
+        surface_ironium,
+        surface_boranium,
+        surface_germanium,
+        population,
+        mines,
+        factories,
+        defenses,
+        ..base
+    })
+}
+
+// ── FleetBlock (type-16) ───────────────────────────────────────────────────────
+
+/// One fleet record (type-16 FleetBlock).
+///
+/// Full layout confirmed 2026-04-20 (Structure16.xml + starsapi PartialFleetBlock.java):
+///   b0-1  : FleetAndOwnerIDs — bits 0-8 = fleet_id (9-bit), bits 9-12 = owner_id (4-bit)
+///   b4    : kindByte — 7=FULL_KIND, 3=PARTIAL_KIND, 4=PICK_POCKET_KIND
+///   b5    : flags — bit3 (0x08) = ShipCountLengthsAre1InsteadOf2
+///   b6-7  : positionObjectId (LE uint16) — planet/starbase orbited; 65535=en route
+///   b8-9  : X (LE int16); b10-11: Y (LE int16)
+///   b12-13: ShipTypeBitmap (LE uint16)
+///   b14+  : per-slot ship counts, then CargoLengthBitmap(2), cargo values, tail.
+///
+/// This decoder handles single-slot fleets (b5=0x09 → 1-byte ship counts) only.
+/// Cargo decoded for the colonists+fuel case; iron/boran/germ cargo assumed absent.
+/// See findings/fleetblock_structure.rst.
+#[derive(Debug, Serialize)]
+pub struct FleetRecord {
+    pub fleet_index: u16,
+    /// Owner ID (0-based player index); b1 bits 1-4: (b1 >> 1) & 0x0F.
+    pub owner_id: u8,
+    /// Planet currently orbited (LE uint16); 65535 = en route / deep space.
+    pub orbit_planet_idx: u16,
+    /// True when orbit_planet_idx == 65535 (fleet is moving between planets).
+    pub en_route: bool,
+    pub x: i16,
+    pub y: i16,
+    /// ShipTypeBitmap (b12-13): bit N set = design slot N present in fleet.
+    pub design_bitmask: u16,
+    /// Ship count for the first occupied design slot (b14, 1 byte when b5 bit3=1).
+    pub first_slot_ship_count: u8,
+    /// CargoLengthBitmap byte 0 (b15): bits 7-6=PopLen, 5-4=GermLen, 3-2=BoranLen, 1-0=IronLen.
+    pub cargo_bitmap0: u8,
+    /// CargoLengthBitmap byte 1 (b16): bits 1-0=FuelLen code (0→0B,1→1B,2→2B,3→4B).
+    pub cargo_bitmap1: u8,
+    /// Fuel on board in mg.
+    pub fuel_mg: u16,
+    /// Colonists on board in units of 100 colonists (present when cargo_bitmap0 bit 6 set).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub colonists_100: Option<u8>,
+    /// Battle plan index × 16 (present in 23-byte FULL_KIND records).
+    pub battle_plan_idx: Option<u8>,
+    /// Number of waypoints for this fleet (including current-position waypoint when en route).
+    pub waypoint_count: u8,
+}
+
+/// Decode a type-16 FleetBlock.  Returns None for a payload shorter than the fixed prefix.
+pub fn decode_type16(p: &[u8]) -> Option<FleetRecord> {
+    if p.len() < 19 {
+        return None;
+    }
+    let orbit = u16::from_le_bytes([p[6], p[7]]);
+    let cargo_bitmap0 = p[15]; // CargoLengthBitmap byte 0: bits 7-6=PopLen, 5-4=GermLen, …
+    let cargo_bitmap1 = p[16]; // CargoLengthBitmap byte 1: bits 1-0=FuelLen code
+                               // Bit 6 of cargo_bitmap0 = low bit of PopLen: set when colonists are on board.
+                               // TODO: bits 0-5 of cargo_bitmap0 encode IronLen, BoranLen, GermLen — not yet decoded;
+                               //       assumed 0 (no mineral cargo) for current oracle data.
+    let has_colonists = (cargo_bitmap0 & 0x40) != 0;
+
+    // Cargo path (colonists present): b17=population(1B), b18=fuel(1B), tail at b19+.
+    // No-cargo path: fuel at b17 (1 or 2 bytes per cargo_bitmap1 bits 0-1), tail follows.
+    let (fuel_mg, colonists_100, battle_plan_idx, waypoint_count) = if has_colonists {
+        let pop = if p.len() > 17 { Some(p[17]) } else { None };
+        let fuel = if p.len() > 18 { p[18] as u16 } else { 0 };
+        let bp = if p.len() > 21 { Some(p[21]) } else { None };
+        let wps = if p.len() > 22 { p[22] } else { 0 };
+        (fuel, pop, bp, wps)
+    } else {
+        let fuel_len = (cargo_bitmap1 & 0x03) as usize; // 0→0B, 1→1B, 2→2B, 3→4B
+        let fuel = match fuel_len {
+            1 => {
+                if p.len() > 17 {
+                    p[17] as u16
+                } else {
+                    0
+                }
+            }
+            _ => u16::from_le_bytes([
+                if p.len() > 17 { p[17] } else { 0 },
+                if p.len() > 18 { p[18] } else { 0 },
+            ]),
+        };
+        // Tail: DamagedShipTypeBitmap(2) + battlePlan(1) + waypointCount(1) follow cargo.
+        // Offset after fuel = 17 + fuel_len (clamped to 2 max for 16-bit reads).
+        let tail = 17 + fuel_len.min(2);
+        let (bp, wps) = if p.len() > tail + 2 {
+            (
+                Some(p[tail + 2]),
+                if p.len() > tail + 3 { p[tail + 3] } else { 0 },
+            )
+        } else {
+            (None, if p.len() > tail + 2 { p[tail + 2] } else { 0 })
+        };
+        (fuel, None, bp, wps)
+    };
+
+    Some(FleetRecord {
+        fleet_index: (p[0] as u16) | (((p[1] & 1) as u16) << 8), // 9-bit fleet ID
+        owner_id: (p[1] >> 1) & 0x0F,                            // b1 bits 1-4
+        orbit_planet_idx: orbit,
+        en_route: orbit == 65535,
+        x: i16::from_le_bytes([p[8], p[9]]),
+        y: i16::from_le_bytes([p[10], p[11]]),
+        design_bitmask: u16::from_le_bytes([p[12], p[13]]),
+        first_slot_ship_count: p[14],
+        cargo_bitmap0,
+        cargo_bitmap1,
+        fuel_mg,
+        colonists_100,
+        battle_plan_idx,
+        waypoint_count,
+    })
+}
+
+// ── WaypointBlock (type-19 / type-20) ──────────────────────────────────────────
+
+/// Per-resource cargo operation within a Transport task.
+///
+/// Encoded as two consecutive bytes in the type-19 payload (confirmed exp4):
+///   byte_lo = amount & 0xFF
+///   byte_hi = (action << 4) | ((amount >> 8) & 0xF)
+#[derive(Debug, Serialize)]
+pub struct ResourceOp {
+    /// Amount in kT (0–4095).
+    pub amount: u16,
+    /// Action code: 0=No change, 1=Unload All, 2=Load All, 3=Load Exactly,
+    /// 4=Unload Exactly, 5=Fill Up To.
+    pub action: u8,
+}
+
+/// Transport task payload decoded from type-19 bytes b8-17 (10 bytes, 5 × 2).
+#[derive(Debug, Serialize)]
+pub struct TransportPayload {
+    pub ironium: ResourceOp,
+    pub boranium: ResourceOp,
+    pub germanium: ResourceOp,
+    /// Colonists, in units of 100 (same as population elsewhere in the format).
+    pub colonists: ResourceOp,
+    pub fuel: ResourceOp,
+}
+
+/// One waypoint record (type-19 TaskWaypointBlock or type-20 WaypointBlock).
+///
+/// Both types share the same 8-byte header; type-19 adds 10 bytes of task parameters.
+#[derive(Debug, Serialize)]
+pub struct WaypointRecord {
+    /// Waypoint X coordinate (bytes 0-1 LE int16).
+    pub x: i16,
+    /// Waypoint Y coordinate (bytes 2-3 LE int16).
+    pub y: i16,
+    /// Target planet index (bytes 4-5 LE int16; 0 = deep space / en-route current position).
+    pub planet_index: i16,
+    /// Warp speed: 0 = orbit/stationary, 1-10 = warp N (b6 >> 4).
+    pub warp_speed: u8,
+    /// Waypoint task type (b6 & 0xF): 0=none, 1=Transport, 2=Colonize, 3=Remote Mining,
+    /// 4=Merge with Fleet, 5=Scrap Fleet, 6=Lay Mine Field, 7=Patrol, 8=Route, 9=Transfer Fleet.
+    pub task_type: u8,
+    /// True if this waypoint represents the fleet's current position (bit 2 of b7 set).
+    pub is_current_position: bool,
+    /// True if decoded from a type-19 TaskWaypointBlock (has task payload at b8-17).
+    pub has_task_payload: bool,
+    /// Present when task_type=1 (Transport) and has_task_payload=true.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transport_payload: Option<TransportPayload>,
+}
+
+/// Decode a single two-byte resource operation from the type-19 Transport payload.
+fn decode_resource_op(lo: u8, hi: u8) -> ResourceOp {
+    let amount = (lo as u16) | (((hi & 0x0F) as u16) << 8);
+    let action = (hi >> 4) & 0x0F;
+    ResourceOp { amount, action }
+}
+
+/// Decode a type-19 or type-20 waypoint payload.
+/// `has_task_payload` is true for type-19 (b8-17 hold task parameters).
+pub fn decode_waypoint(p: &[u8], has_task_payload: bool) -> Option<WaypointRecord> {
+    if p.len() < 8 {
+        return None;
+    }
+    let b6 = p[6];
+    let b7 = p[7];
+    let task_type = b6 & 0xF;
+
+    // Decode Transport payload from b8-17 when present.
+    let transport_payload = if has_task_payload && task_type == 1 && p.len() >= 18 {
+        Some(TransportPayload {
+            ironium: decode_resource_op(p[8], p[9]),
+            boranium: decode_resource_op(p[10], p[11]),
+            germanium: decode_resource_op(p[12], p[13]),
+            colonists: decode_resource_op(p[14], p[15]),
+            fuel: decode_resource_op(p[16], p[17]),
+        })
+    } else {
+        None
+    };
+
+    Some(WaypointRecord {
+        x: i16::from_le_bytes([p[0], p[1]]),
+        y: i16::from_le_bytes([p[2], p[3]]),
+        planet_index: i16::from_le_bytes([p[4], p[5]]),
+        warp_speed: b6 >> 4,
+        task_type,
+        is_current_position: (b7 & 0x04) != 0,
+        has_task_payload,
+        transport_payload,
+    })
+}
+
+// ── BattlePlanBlock (type-30) ───────────────────────────────────────────────────
+
+/// One battle plan record (type-30 BattlePlanBlock).
+///
+/// Confirmed field layout (from user-provided default plan settings + oracle cross-reference):
+///   b0  : plan_id = plan_index × 16 (0,16,32,48,64,80 for 6 plans)
+///   b1  : tactic (0=Disengage, 1=Disengage if challenged, 3=Max net damage, 4=Max damage ratio)
+///   b2  : targets packed byte: high nybble = secondary target, low nybble = primary target
+///   b3  : Attack Who (0x02 = Everyone for all default plans)
+#[derive(Debug, Serialize)]
+pub struct BattlePlanRecord {
+    /// Plan index × 16 (0, 16, 32, 48, 64, 80 for plans 0-5).
+    pub plan_id: u8,
+    /// Tactic: 0=Disengage, 1=Disengage if challenged, 3=Max net damage, 4=Max damage ratio.
+    pub tactic: u8,
+    /// Primary target code (low nybble of b2):
+    /// 1=Any, 2=Starbase, 3=Armed Ships, 4=Bombers/Freighters,
+    /// 5=Unarmed Ships, 6=Fuel Transports, 7=Freighters.
+    pub primary_target: u8,
+    /// Secondary target code (high nybble of b2):
+    /// 0=None, 1=Any, 3=Armed Ships, 4=Bombers/Freighters, 6=Fuel Transports, 7=Freighters.
+    pub secondary_target: u8,
+    /// Attack Who: 0x02 = Everyone for all default plans.
+    pub attack_who: u8,
+}
+
+/// Decode a type-30 BattlePlanBlock.  Returns None for a payload shorter than the 4-byte header.
+pub fn decode_type30(p: &[u8]) -> Option<BattlePlanRecord> {
+    if p.len() < 4 {
+        return None;
+    }
+    Some(BattlePlanRecord {
+        plan_id: p[0],
+        tactic: p[1],
+        primary_target: p[2] & 0xF,
+        secondary_target: (p[2] >> 4) & 0xF,
+        attack_who: p[3],
+    })
+}
+
+// ── DesignBlock (type-26) ──────────────────────────────────────────────────────
+//
+// Component name tables, 0-indexed (itemId = UNEDITED.MOD item_index − 1).
+// Source: stars-4x/starsapi UNEDITED.MOD; category-to-TechCategory mapping from Items.java.
+
+static ENGINE_NAMES: &[&str] = &[
+    "Settler's Delight",
+    "Quick Jump 5",
+    "Fuel Mizer",
+    "Long Hump 6",
+    "Daddy Long Legs 7",
+    "Alpha Drive 8",
+    "Trans-Galactic Drive",
+    "Interspace-10",
+    "Enigma Pulsar",
+    "Trans-Star 10",
+    "Radiating Hydro-Ram Scoop",
+    "Sub-Galactic Fuel Scoop",
+    "Trans-Galactic Fuel Scoop",
+    "Trans-Galactic Super Scoop",
+    "Trans-Galactic Mizer Scoop",
+    "Galaxy Scoop",
+];
+static SCANNER_NAMES: &[&str] = &[
+    "Bat Scanner",
+    "Rhino Scanner",
+    "Mole Scanner",
+    "DNA Scanner",
+    "Possum Scanner",
+    "Pick Pocket Scanner",
+    "Chameleon Scanner",
+    "Ferret Scanner",
+    "Dolphin Scanner",
+    "Gazelle Scanner",
+    "RNA Scanner",
+    "Cheetah Scanner",
+    "Elephant Scanner",
+    "Eagle Eye Scanner",
+    "Robber Baron Scanner",
+    "Peerless Scanner",
+];
+static SHIELD_NAMES: &[&str] = &[
+    "Mole-skin Shield",
+    "Cow-hide Shield",
+    "Wolverine Diffuse Shield",
+    "Croby Sharmor",
+    "Shadow Shield",
+    "Bear Neutrino Barrier",
+    "Langston Shell",
+    "Gorilla Delagator",
+    "Elephant Hide Fortress",
+    "Complete Phase Shield",
+];
+static ARMOR_NAMES: &[&str] = &[
+    "Tritanium",
+    "Crobmnium",
+    "Carbonic Armor",
+    "Strobnium",
+    "Organic Armor",
+    "Kelarium",
+    "Fielded Kelarium",
+    "Depleted Neutronium",
+    "Neutronium",
+    "Mega Poly Shell",
+    "Valanium",
+    "Superlatanium",
+];
+static BEAMWEAPON_NAMES: &[&str] = &[
+    "Laser",
+    "X-Ray Laser",
+    "Mini Gun",
+    "Yakimora Light Phaser",
+    "Blackjack",
+    "Phaser Bazooka",
+    "Pulsed Sapper",
+    "Colloidal Phaser",
+    "Gatling Gun",
+    "Mini Blaster",
+    "Bludgeon",
+    "Mark IV Blaster",
+    "Phased Sapper",
+    "Heavy Blaster",
+    "Gatling Neutrino Cannon",
+    "Myopic Disruptor",
+    "Blunderbuss",
+    "Disruptor",
+    "Multi Contained Munition",
+    "Syncro Sapper",
+    "Mega Disruptor",
+    "Big Mutha Cannon",
+    "Streaming Pulverizer",
+    "Anti-Matter Pulverizer",
+];
+static TORPEDO_NAMES: &[&str] = &[
+    "Alpha Torpedo",
+    "Beta Torpedo",
+    "Delta Torpedo",
+    "Epsilon Torpedo",
+    "Rho Torpedo",
+    "Upsilon Torpedo",
+    "Omega Torpedo",
+    "Anti Matter Torpedo",
+    "Jihad Missile",
+    "Juggernaut Missile",
+    "Doomsday Missile",
+    "Armageddon Missile",
+];
+static BOMB_NAMES: &[&str] = &[
+    "Lady Finger Bomb",
+    "Black Cat Bomb",
+    "M-70 Bomb",
+    "M-80 Bomb",
+    "Cherry Bomb",
+    "LBU-17 Bomb",
+    "LBU-32 Bomb",
+    "LBU-74 Bomb",
+    "Hush-a-Boom",
+    "Retro Bomb",
+    "Smart Bomb",
+    "Neutron Bomb",
+    "Enriched Neutron Bomb",
+    "Peerless Bomb",
+    "Annihilator Bomb",
+];
+static MININGROBOT_NAMES: &[&str] = &[
+    "Robo-Midget Miner",
+    "Robo-Mini-Miner",
+    "Robo-Miner",
+    "Robo-Maxi-Miner",
+    "Robo-Super-Miner",
+    "Robo-Ultra-Miner",
+    "Alien Miner",
+    "Orbital Adjuster",
+];
+static MINELAYER_NAMES: &[&str] = &[
+    "Mine Dispenser 40",
+    "Mine Dispenser 50",
+    "Mine Dispenser 80",
+    "Mine Dispenser 130",
+    "Heavy Dispenser 50",
+    "Heavy Dispenser 110",
+    "Heavy Dispenser 200",
+    "Speed Trap 20",
+    "Speed Trap 30",
+    "Speed Trap 50",
+];
+static ORBITAL_NAMES: &[&str] = &[
+    "Stargate 100/250",
+    "Stargate any/300",
+    "Stargate 150/600",
+    "Stargate 300/500",
+    "Stargate 100/any",
+    "Stargate any/800",
+    "Stargate any/any",
+    "Mass Driver 5",
+    "Mass Driver 6",
+    "Mass Driver 7",
+    "Super Driver 8",
+    "Super Driver 9",
+    "Ultra Driver 10",
+    "Ultra Driver 11",
+    "Ultra Driver 12",
+    "Ultra Driver 13",
+];
+static PLANETARY_NAMES: &[&str] = &[
+    "Viewer 50",
+    "Viewer 90",
+    "Scoper 150",
+    "Scoper 220",
+    "Scoper 280",
+    "Snooper 320X",
+    "Snooper 400X",
+    "Snooper 500X",
+    "Snooper 620X",
+    "SDI",
+    "Missile Battery",
+    "Laser Battery",
+    "Planetary Shield",
+    "Neutron Shield",
+    "Genesis Device",
+];
+static ELECTRICAL_NAMES: &[&str] = &[
+    "Transport Cloaking",
+    "Stealth Cloak",
+    "Super-Stealth Cloak",
+    "Ultra-Stealth Cloak",
+    "Multi Function Pod",
+    "Battle Computer",
+    "Battle Super Computer",
+    "Battle Nexus",
+    "Jammer 10",
+    "Jammer 20",
+    "Jammer 30",
+    "Jammer 50",
+    "Energy Capacitor",
+    "Flux Capacitor",
+    "Energy Dampener",
+    "Tachyon Detector",
+    "Anti-matter Generator",
+];
+static MECHANICAL_NAMES: &[&str] = &[
+    "Colonization Module",
+    "Orbital Construction Module",
+    "Cargo Pod",
+    "Super Cargo Pod",
+    "Multi Cargo Pod",
+    "Fuel Tank",
+    "Super Fuel Tank",
+    "Maneuvering Jet",
+    "Overthruster",
+    "Jump Gate",
+    "Beam Deflector",
+];
+
+fn component_name(category: u16, item_id: u8) -> &'static str {
+    let id = item_id as usize;
+    let table: &[&str] = match category {
+        1 => ENGINE_NAMES,
+        2 => SCANNER_NAMES,
+        4 => SHIELD_NAMES,
+        8 => ARMOR_NAMES,
+        0x10 => BEAMWEAPON_NAMES,
+        0x20 => TORPEDO_NAMES,
+        0x40 => BOMB_NAMES,
+        0x80 => MININGROBOT_NAMES,
+        0x100 => MINELAYER_NAMES,
+        0x200 => ORBITAL_NAMES,
+        0x400 => PLANETARY_NAMES,
+        0x800 => ELECTRICAL_NAMES,
+        0x1000 => MECHANICAL_NAMES,
+        _ => return "?",
+    };
+    table.get(id).copied().unwrap_or("?")
+}
+
+fn category_name_str(category: u16) -> &'static str {
+    match category {
+        1 => "Engine",
+        2 => "Scanner",
+        4 => "Shield",
+        8 => "Armor",
+        0x10 => "BeamWeapon",
+        0x20 => "Torpedo",
+        0x40 => "Bomb",
+        0x80 => "MiningRobot",
+        0x100 => "MineLayer",
+        0x200 => "Orbital",
+        0x400 => "Planetary",
+        0x800 => "Electrical",
+        0x1000 => "Mechanical",
+        _ => "?",
+    }
+}
+
+fn hull_name_str(hull_id: u8) -> &'static str {
+    match hull_id {
+        0 => "Small Freighter",
+        1 => "Medium Freighter",
+        2 => "Large Freighter",
+        3 => "Super Freighter",
+        4 => "Scout",
+        5 => "Frigate",
+        6 => "Destroyer",
+        7 => "Cruiser",
+        8 => "Battle Cruiser",
+        9 => "Battleship",
+        10 => "Dreadnought",
+        11 => "Privateer",
+        12 => "Rogue",
+        13 => "Galleon",
+        14 => "Mini-Colony Ship",
+        15 => "Colony Ship",
+        16 => "Mini Bomber",
+        17 => "B-17 Bomber",
+        18 => "Stealth Bomber",
+        19 => "B-52 Bomber",
+        20 => "Midget Miner",
+        21 => "Mini-Miner",
+        22 => "Miner",
+        23 => "Maxi-Miner",
+        24 => "Ultra-Miner",
+        25 => "Fuel Transport",
+        26 => "Super-Fuel Xport",
+        27 => "Mini Mine Layer",
+        28 => "Super Mine Layer",
+        29 => "Nubian",
+        30 => "Mini Morph",
+        31 => "Meta Morph",
+        32 => "Orbital Fort",
+        33 => "Space Dock",
+        34 => "Space Station",
+        35 => "Ultra Station",
+        36 => "Death Star",
+        _ => "?",
+    }
+}
+
+/// Decode a Stars! nibble-encoded design name.
+///
+/// Format (Util.java:decodeStarsString / decodeHexStarsString):
+///   data[0]  = byte count of encoded data (nameLen)
+///   data[1..1+nameLen] = encoded bytes; processed as 2*nameLen nibbles (hi nibble first)
+pub fn decode_stars_name(data: &[u8]) -> String {
+    if data.is_empty() {
+        return String::new();
+    }
+    let name_len = data[0] as usize;
+    if data.len() < 1 + name_len {
+        return String::new();
+    }
+    let encoded = &data[1..1 + name_len];
+
+    const ONE: [char; 11] = [' ', 'a', 'e', 'h', 'i', 'l', 'n', 'o', 'r', 's', 't'];
+    const BT: [char; 16] = [
+        'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P',
+    ];
+    const CT: [char; 16] = [
+        'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z', '0', '1', '2', '3', '4', '5',
+    ];
+    const DT: [char; 16] = [
+        '6', '7', '8', '9', 'b', 'c', 'd', 'f', 'g', 'j', 'k', 'm', 'p', 'q', 'u', 'v',
+    ];
+    const ET: [char; 16] = [
+        'w', 'x', 'y', 'z', '+', '-', ',', '!', '.', '?', ':', ';', '\'', '*', '%', '$',
+    ];
+
+    let nibs: Vec<u8> = encoded
+        .iter()
+        .flat_map(|&b| [(b >> 4) & 0xF, b & 0xF])
+        .collect();
+    let mut result = String::new();
+    let mut i = 0;
+    let limit = name_len * 2;
+    while i < limit && i < nibs.len() {
+        let n = nibs[i];
+        match n {
+            0..=10 => {
+                result.push(ONE[n as usize]);
+                i += 1;
+            }
+            11 => {
+                i += 1;
+                if i < nibs.len() {
+                    result.push(BT[nibs[i] as usize]);
+                    i += 1;
+                }
+            }
+            12 => {
+                i += 1;
+                if i < nibs.len() {
+                    result.push(CT[nibs[i] as usize]);
+                    i += 1;
+                }
+            }
+            13 => {
+                i += 1;
+                if i < nibs.len() {
+                    result.push(DT[nibs[i] as usize]);
+                    i += 1;
+                }
+            }
+            14 => {
+                i += 1;
+                if i < nibs.len() {
+                    result.push(ET[nibs[i] as usize]);
+                    i += 1;
+                }
+            }
+            15 => {
+                i += 1;
+                if i + 1 < nibs.len() {
+                    let lo = nibs[i] as u32;
+                    i += 1;
+                    let hi = nibs[i] as u32;
+                    i += 1;
+                    if let Some(c) = char::from_u32((lo << 4) | hi) {
+                        result.push(c);
+                    }
+                }
+            }
+            _ => {
+                i += 1;
+            }
+        }
+    }
+    result
+}
+
+/// One slot within a ship or starbase design.
+#[derive(Debug, Serialize)]
+pub struct DesignSlot {
+    pub category: u16,
+    /// Human-readable category name (empty string for empty slots where count=0).
+    pub category_name: String,
+    pub item_id: u8,
+    pub count: u8,
+    /// Component name from UNEDITED.MOD (empty string for empty slots).
+    pub component: String,
+}
+
+/// One ship or starbase design decoded from a type-26 DesignBlock (full-design only).
+///
+/// Confirmed from DesignBlock.java (stars-4x/starsapi) and oracle IT0001.m1.
+#[derive(Debug, Serialize)]
+pub struct DesignRecord {
+    pub design_number: u8,
+    pub is_starbase: bool,
+    pub hull_id: u8,
+    pub hull_name: String,
+    pub pic: u8,
+    pub armor: u16,
+    pub slot_count: u8,
+    pub turn_designed: u16,
+    pub total_built: u32,
+    pub total_remaining: u32,
+    pub name: String,
+    pub slots: Vec<DesignSlot>,
+}
+
+/// Decode a type-26 DesignBlock payload.  Returns None for non-full-design records.
+pub fn decode_type26(p: &[u8]) -> Option<DesignRecord> {
+    if p.len() < 17 {
+        return None;
+    }
+    if (p[0] & 3) != 3 {
+        return None;
+    }
+    if (p[0] & 0x04) == 0 {
+        return None;
+    }
+    let is_starbase = (p[1] & 0x40) != 0;
+    let design_number = (p[1] & 0x3C) >> 2;
+    let hull_id = p[2];
+    let pic = p[3];
+    let armor = u16::from_le_bytes([p[4], p[5]]);
+    let slot_count = p[6] as usize;
+    let turn_designed = u16::from_le_bytes([p[7], p[8]]);
+    let total_built = u32::from_le_bytes([p[9], p[10], p[11], p[12]]);
+    let total_remaining = u32::from_le_bytes([p[13], p[14], p[15], p[16]]);
+    let slots_end = 17 + slot_count * 4;
+    if p.len() < slots_end {
+        return None;
+    }
+    let mut slots = Vec::with_capacity(slot_count);
+    for i in 0..slot_count {
+        let off = 17 + i * 4;
+        let category = u16::from_le_bytes([p[off], p[off + 1]]);
+        let item_id = p[off + 2];
+        let count = p[off + 3];
+        let (category_name, component) = if count == 0 {
+            (String::new(), String::new())
+        } else {
+            (
+                category_name_str(category).to_string(),
+                component_name(category, item_id).to_string(),
+            )
+        };
+        slots.push(DesignSlot {
+            category,
+            category_name,
+            item_id,
+            count,
+            component,
+        });
+    }
+    let name = decode_stars_name(p.get(slots_end..).unwrap_or(&[]));
+    Some(DesignRecord {
+        design_number,
+        is_starbase,
+        hull_id,
+        hull_name: hull_name_str(hull_id).to_string(),
+        pic,
+        armor,
+        slot_count: p[6],
+        turn_designed,
+        total_built,
+        total_remaining,
+        name,
+        slots,
+    })
+}

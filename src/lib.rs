@@ -5,6 +5,7 @@
 // shared building blocks so each tool in src/bin/ can focus on field decoding.
 
 pub mod advantage_points;
+pub mod blocks;
 pub mod cipher;
 pub mod gamedef;
 pub mod messages;
