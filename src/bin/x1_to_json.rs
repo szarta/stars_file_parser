@@ -223,15 +223,22 @@ struct QueueItem {
 }
 
 /// One decoded ship-design slot from a type-27 long form: a 4-byte tuple
-/// `[category, 0x00, component_id, present]`. See `Order::DesignSave`.
+/// `[category_lo, category_hi, component_id, count]`. See `Order::DesignSave`.
 #[derive(Debug, Serialize)]
 struct DesignSlot {
-    /// Slot kind (0x01 engine, 0x02 scanner, …).
-    category: u8,
-    /// Component index within the category; keeps its last value when emptied.
+    /// Component category bitmask (little-endian u16), the same space as the
+    /// `.mN` design-slot `category`: 0x0001 Engine, 0x0002 Scanner, 0x0004
+    /// Shield, 0x0008 Armor, 0x0010 BeamWeapon, 0x0020 Torpedo, 0x0040 Bomb,
+    /// 0x0080 MiningRobot, 0x0100 MineLayer, 0x0800 Electrical, 0x1000
+    /// Mechanical (and composite masks such as 0x1800 for a slot taking either).
+    category: u16,
+    /// Component index within the category, matching the `.mN` slot `item_id`
+    /// (resolve to a name via GET /model/technologies). Keeps its last value
+    /// when the slot is emptied (`count == 0`).
     component_id: u8,
-    /// True when the slot holds a component.
-    present: bool,
+    /// Number of this component in the slot: 1 by default, higher from a
+    /// shift-drag (×4) or ctrl-drag (fill the slot); 0 means the slot is empty.
+    count: u8,
 }
 
 #[derive(Debug, Serialize)]
@@ -388,20 +395,24 @@ enum Order {
 
     /// Type-27 (long form) — ship/starbase design create/save.
     ///
-    /// 34–80 B. Begins `slot, id, 0x07, hull, .., .., 0x14, ..` — byte 2
-    /// (`0x07`) and byte 6 (`0x14`) are invariant across captured samples and
-    /// the research corpus. Emitted on Copy-and-save from the Ship Designer; a
-    /// trailing Stars-name-encoded design name closes the record.
+    /// 34–80 B. Begins `slot, id, 0x07, ..` — byte 2 (`0x07`) is invariant
+    /// across captured samples and the research corpus. Emitted on
+    /// Copy-and-save from the Ship Designer; a trailing Stars-name-encoded
+    /// design name closes the record.
     ///
-    /// Slot layout (oracle + hand-driven edits 2026-10-25): `byte8` is the
-    /// hull's slot count, followed (after a ten-byte zero region) by one
-    /// 4-byte tuple `[category, 0x00, component_id, present]` per slot from
-    /// byte 19. `category` is the slot kind (0x01 engine, 0x02 scanner, …);
-    /// `component_id` indexes the component within its category; `present` is
-    /// 1 when filled. The decode is validated on the 3-slot Armed Probe; the
-    /// header, the zero region and the name are still surfaced raw via
-    /// `payload_hex`, and `slots` is empty when the record does not match the
-    /// known shape. See research `findings/x1_type27_design.rst`.
+    /// Slot layout (confirmed on the full archive corpus 2026-10-29, hulls of
+    /// 3–12 slots): `byte8` is the hull's slot count; `byte9` is a non-zero
+    /// per-save field (observed 0x37/0x5f/0x67, meaning open); bytes 10–18 are
+    /// a nine-byte zero region; then one 4-byte tuple per slot from byte 19 —
+    /// `[category_lo, category_hi, component_id, count]` (see `DesignSlot`).
+    /// `category` is the little-endian u16 component-category bitmask (the same
+    /// space as the `.mN` slot `category`; e.g. 0x0010 BeamWeapon, 0x1000
+    /// Mechanical); `count` is the number of that component in the slot (1
+    /// default, ×4/fill from shift/ctrl-drag, 0 when empty). The design name,
+    /// `byte9`, and the remaining header bytes (byte0/1 id, byte3 per-save
+    /// counter, byte6/7) are still surfaced raw via `payload_hex`; `slots` is
+    /// empty when the record does not match this shape. See research
+    /// `findings/x1_type27_design.rst`.
     DesignSave {
         /// byte8: number of hull slot positions (not the number filled).
         slot_count: u8,
@@ -460,24 +471,23 @@ fn decode_type27(p: &[u8]) -> Order {
     } else {
         let slot_count = if p.len() > 8 { p[8] } else { 0 };
         // Decode the slot-tuple array only when the record matches the shape
-        // the layout was validated against: the byte2/byte6 anchors and the
-        // ten-byte zero region (bytes 9-18) that precedes the tuples. An
-        // unrecognized variant (e.g. a larger hull with a different leading
-        // region) falls back to an empty `slots` with the raw `payload_hex`,
-        // per the crate's decode-faithfully-or-raw policy.
+        // confirmed across the archive corpus: the byte2 (`0x07`) anchor, the
+        // nine-byte zero region at bytes 10–18 (byte9 is a non-zero per-save
+        // field), and enough length for `slot_count` 4-byte tuples from byte
+        // 19. An unrecognized variant falls back to an empty `slots` with the
+        // raw `payload_hex`, per the crate's decode-faithfully-or-raw policy.
         const TUPLES_OFF: usize = 19;
-        let known_shape = p.len() >= TUPLES_OFF
+        let known_shape = p.len() >= TUPLES_OFF + 4 * slot_count as usize
             && p[2] == 0x07
-            && p[6] == 0x14
-            && p[9..19].iter().all(|&b| b == 0);
+            && p[10..19].iter().all(|&b| b == 0);
         let mut slots = Vec::new();
-        if known_shape && p.len() >= TUPLES_OFF + 4 * slot_count as usize {
+        if known_shape {
             for k in 0..slot_count as usize {
                 let off = TUPLES_OFF + 4 * k;
                 slots.push(DesignSlot {
-                    category: p[off],
+                    category: u16::from(p[off]) | (u16::from(p[off + 1]) << 8),
                     component_id: p[off + 2],
-                    present: p[off + 3] != 0,
+                    count: p[off + 3],
                 });
             }
         }
@@ -837,10 +847,14 @@ mod tests {
     }
 
     #[test]
-    fn type27_long_form_is_surfaced_as_raw_design_save() {
+    fn type27_long_form_unrecognized_shape_is_surfaced_raw() {
+        // byte2 is the type-27 marker, but a non-zero byte inside the 10..18
+        // zero region means this is not the known slot shape: decode must fall
+        // back to empty `slots` + raw `payload_hex` rather than guess.
         let mut payload = vec![0u8; 34];
-        payload[2] = 0x07; // invariant marker observed in captured saves
-        payload[6] = 0x14;
+        payload[2] = 0x07;
+        payload[8] = 3; // claims 3 slots
+        payload[12] = 0x99; // inside the zero region -> shape unrecognized
         match decode_type27(&payload) {
             Order::DesignSave {
                 slot_count,
@@ -848,8 +862,46 @@ mod tests {
                 payload_hex,
             } => {
                 assert_eq!(payload_hex.split_whitespace().count(), 34);
-                assert_eq!(slot_count, 0); // byte8 is zero in this synthetic record
-                assert!(slots.is_empty());
+                assert_eq!(slot_count, 3);
+                assert!(slots.is_empty(), "unrecognized shape must not decode slots");
+            }
+            other => panic!("expected DesignSave, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn type27_long_form_decodes_16bit_category_and_count() {
+        // Real 6-slot save (normally_played .x11): engine Trans-Galactic Fuel
+        // Scoop (cat 0x0001, id 12, ×2), Mechanical Maneuvering Jet (cat 0x1000,
+        // id 7, ×2) — exercising the little-endian 16-bit category — then four
+        // MiningRobot slots (cat 0x0080) with counts 2/1/2/1. byte9 is the
+        // non-zero per-save field (0x37).
+        let payload: Vec<u8> = vec![
+            0xa1, 0x02, 0x07, 0x08, 0x16, 0x58, 0xdb, 0x01, 0x06, 0x37, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x0c, 0x02, 0x00, 0x10, 0x07, 0x02, 0x80,
+            0x00, 0x03, 0x02, 0x80, 0x00, 0x03, 0x01, 0x80, 0x00, 0x03, 0x02, 0x80, 0x00, 0x03,
+            0x01, 0x08, 0xb6, 0x87, 0xde, 0x6d, 0x60, 0xb7, 0x7d, 0x8f,
+        ];
+        match decode_type27(&payload) {
+            Order::DesignSave {
+                slot_count, slots, ..
+            } => {
+                assert_eq!(slot_count, 6);
+                assert_eq!(slots.len(), 6);
+                assert_eq!(
+                    (slots[0].category, slots[0].component_id, slots[0].count),
+                    (0x0001, 12, 2)
+                );
+                assert_eq!(
+                    (slots[1].category, slots[1].component_id, slots[1].count),
+                    (0x1000, 7, 2)
+                );
+                assert_eq!(
+                    (slots[2].category, slots[2].component_id, slots[2].count),
+                    (0x0080, 3, 2)
+                );
+                assert_eq!(slots[3].count, 1);
+                assert_eq!(slots[5].count, 1);
             }
             other => panic!("expected DesignSave, got {other:?}"),
         }
@@ -873,16 +925,16 @@ mod tests {
                 assert_eq!(slot_count, 3);
                 assert_eq!(slots.len(), 3);
                 assert_eq!(
-                    (slots[0].category, slots[0].component_id, slots[0].present),
-                    (0x01, 0x03, true)
+                    (slots[0].category, slots[0].component_id, slots[0].count),
+                    (0x0001, 0x03, 1)
                 );
                 assert_eq!(
-                    (slots[1].category, slots[1].component_id, slots[1].present),
-                    (0x02, 0x01, true)
+                    (slots[1].category, slots[1].component_id, slots[1].count),
+                    (0x0002, 0x01, 1)
                 );
                 assert_eq!(
-                    (slots[2].category, slots[2].component_id, slots[2].present),
-                    (0x10, 0x01, true)
+                    (slots[2].category, slots[2].component_id, slots[2].count),
+                    (0x0010, 0x01, 1)
                 );
             }
             other => panic!("expected DesignSave, got {other:?}"),
@@ -890,8 +942,8 @@ mod tests {
     }
 
     #[test]
-    fn type27_long_form_emptied_slot_sets_present_false() {
-        // Same record with the scanner removed: byte26 (tuple1 present) -> 0,
+    fn type27_long_form_emptied_slot_has_count_zero() {
+        // Same record with the scanner removed: byte26 (tuple1 count) -> 0,
         // slot_count stays 3 (slot count, not populated count).
         let payload: Vec<u8> = vec![
             0x01, 0xe7, 0x07, 0x1d, 0x04, 0x11, 0x14, 0x00, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00,
@@ -905,8 +957,8 @@ mod tests {
             } => {
                 assert_eq!(slot_count, 3);
                 assert_eq!(slots.len(), 3);
-                assert!(!slots[1].present); // scanner slot emptied
-                assert!(slots[0].present && slots[2].present);
+                assert_eq!(slots[1].count, 0); // scanner slot emptied
+                assert!(slots[0].count > 0 && slots[2].count > 0);
             }
             other => panic!("expected DesignSave, got {other:?}"),
         }
