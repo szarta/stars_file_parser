@@ -70,7 +70,7 @@ mod tests {
     use stars_file_parser::name::decode_name_key;
 
     /// Encoder mirroring `_char_code` + `encode_name_key` in
-    /// `stars-reborn-research/reverse-engineering/scripts/analyze_r1.py`.
+    /// `stars-reborn-research/re/scripts/analyze_r1.py`.
     /// Used only here to round-trip the decoder.
     fn encode(name: &str) -> Vec<u8> {
         fn char_code(c: char) -> u32 {
