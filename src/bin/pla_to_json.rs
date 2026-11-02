@@ -10,9 +10,8 @@
 //                   of ~/.wine32/drive_c/windows/Stars.ini.  NN = player number.
 //
 // The rich format adds hab values, original hab, terraforming info, scanner/
-// stargate/mass-driver ranges, and route info.  Use create_stars_ini.py (in
-// stars-reborn-research/automation/) to ensure NewReports=1 is set before
-// running dump_game_info.py.
+// stargate/mass-driver ranges, and route info.  Set `NewReports=1` in the
+// `[Stars]` section of Stars.ini before dumping so these columns are written.
 //
 // Format detection is automatic: if the "Grav" column is present → rich.
 //

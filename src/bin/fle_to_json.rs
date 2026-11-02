@@ -11,8 +11,8 @@
 //
 // The rich format adds owner (player number), ETA, warp speed, mass, cloak
 // percent, scanner ranges, current task, and ship-type counts.
-// Use create_stars_ini.py (in stars-reborn-research/automation/) to ensure
-// NewReports=1 is set before running dump_game_info.py.
+// Set `NewReports=1` in the `[Stars]` section of Stars.ini before dumping so
+// these columns are written.
 //
 // Format detection is automatic: if the "Owner" column is present → rich.
 //

@@ -8,10 +8,8 @@
 // game state (notably `m1_to_json` and `hst_to_json`) shares one confirmed
 // implementation instead of duplicating offsets.
 //
-// Confirmed field offsets are documented in
-// stars-reborn-research/knowledge/findings/binary_file_format.rst and the
-// per-block findings it links (fleetblock_structure.rst, events_block.rst, the
-// starting_fleets_*.rst design corpus).
+// Confirmed field offsets were recovered by Ghidra reverse-engineering of the
+// original `stars.exe` (v2.6/2.7) and verified against real game files.
 //
 // Decode philosophy (ADR-0001): decode faithfully to the on-disk layout; where
 // a field's meaning or width is unconfirmed, surface the raw bytes rather than

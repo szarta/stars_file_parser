@@ -69,9 +69,8 @@ fn main() {
 mod tests {
     use stars_file_parser::name::decode_name_key;
 
-    /// Encoder mirroring `_char_code` + `encode_name_key` in
-    /// `stars-reborn-research/re/scripts/analyze_r1.py`.
-    /// Used only here to round-trip the decoder.
+    /// Encoder mirroring the `_char_code` + name-key algorithm the decoder
+    /// implements. Used only here to round-trip the decoder.
     fn encode(name: &str) -> Vec<u8> {
         fn char_code(c: char) -> u32 {
             let o = c as u32;
