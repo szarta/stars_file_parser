@@ -23,6 +23,9 @@
 //   type-34 research_change        — change research allocation
 //   type-35 planet_route_change    — planet production Route destination (one
 //                                    sub-form of PlanetChange; destref = id<<15)
+//   type-38 player_relation_change — per-player relation vector (0=Neutral,
+//                                    1=Friend, 2=Enemy)
+//   type-40 player_message         — in-game message (recipient + nibble text)
 //   type-37 fleets_merge           — merge one or more fleets into a base fleet
 //   type-42 set_fleet_battle_plan  — assign a battle plan to a fleet
 //   type-44 rename_fleet           — rename a fleet
@@ -70,8 +73,16 @@ fn decode_stars_name(data: &[u8]) -> String {
     if data.len() < 1 + name_len {
         return String::new();
     }
-    let encoded = &data[1..1 + name_len];
+    decode_stars_name_bytes(&data[1..1 + name_len])
+}
 
+/// Decode a raw nibble-packed Stars! name/text slice (no leading length byte).
+///
+/// Shared by [`decode_stars_name`] (which strips the length prefix first) and by
+/// type-40 message text, whose length lives in the record header rather than
+/// inline. A trailing lone prefix nibble (padding on an odd nibble count) is
+/// ignored.
+fn decode_stars_name_bytes(encoded: &[u8]) -> String {
     const ONE: [char; 11] = [' ', 'a', 'e', 'h', 'i', 'l', 'n', 'o', 'r', 's', 't'];
     const BT: [char; 16] = [
         'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P',
@@ -92,8 +103,7 @@ fn decode_stars_name(data: &[u8]) -> String {
         .collect();
     let mut result = String::new();
     let mut i = 0;
-    let limit = name_len * 2;
-    while i < limit && i < nibs.len() {
+    while i < nibs.len() {
         let n = nibs[i];
         match n {
             0..=10 => {
@@ -469,11 +479,85 @@ enum Order {
         route_target: Option<u16>,
     },
 
+    /// Type-38 PlayersRelationChangeBlock.
+    ///
+    /// The player's full relation vector toward every player, set from the
+    /// Player Relations dialog (F7, multi-player games only). The payload is one
+    /// byte per player in the game, indexed by 0-based player index (the viewing
+    /// player's own slot is included and is 0). Confirmed against a hand-built
+    /// 12-player game: byte 1 = Friend and byte 2 = Enemy matched setting
+    /// display players 2 and 3 to Friend/Enemy, all others Neutral.
+    ///
+    /// Relation codes: 0 = Neutral, 1 = Friend, 2 = Enemy.
+    PlayerRelationChange {
+        /// Relation toward each player, in player-index order (self included).
+        relations: Vec<String>,
+    },
+
+    /// Type-40 MessageBlock — an in-game player-to-player message (multi-player
+    /// games only). Confirmed against four hand-sent messages:
+    ///
+    /// ```text
+    ///   b0-3   outgoing message id (0 for a message to self)
+    ///   b4-5   reserved (0)
+    ///   b6-7   recipient: 1-based player id; 0 = everybody (broadcast)
+    ///   b8-9   reserved (0)
+    ///   b10-11 text length in bytes
+    ///   b12..  text, Stars nibble name-encoding (no inline length prefix)
+    /// ```
+    PlayerMessage {
+        /// Recipient player id (1-based); 0 means a broadcast to everybody.
+        recipient_player: u16,
+        /// `true` when `recipient_player == 0` (sent to all players).
+        to_everybody: bool,
+        text: String,
+        /// Undecoded leading id bytes (b0-3); 0 for a self-addressed message.
+        id_hex: String,
+    },
+
     /// Unknown or not-yet-decoded record type.
     Unknown {
         record_type: u16,
         payload_hex: String,
     },
+}
+
+/// Decode a type-38 record: one relation byte per player (0 = Neutral,
+/// 1 = Friend, 2 = Enemy), indexed by 0-based player index.
+fn decode_type38(p: &[u8]) -> Order {
+    let relations = p
+        .iter()
+        .map(|&b| match b {
+            0 => "neutral".to_string(),
+            1 => "friend".to_string(),
+            2 => "enemy".to_string(),
+            other => format!("unknown_{other}"),
+        })
+        .collect();
+    Order::PlayerRelationChange { relations }
+}
+
+/// Decode a type-40 record: an in-game player message. Header is 12 bytes; the
+/// recipient is at b6-7 (0 = everybody) and the nibble-encoded text follows a
+/// byte length at b10-11. A too-short or inconsistent record is surfaced raw.
+fn decode_type40(p: &[u8]) -> Order {
+    const HEADER: usize = 12;
+    if p.len() >= HEADER {
+        let recipient_player = read_u16_le(p, 6);
+        let text_len = read_u16_le(p, 10) as usize;
+        if HEADER + text_len <= p.len() {
+            return Order::PlayerMessage {
+                recipient_player,
+                to_everybody: recipient_player == 0,
+                text: decode_stars_name_bytes(&p[HEADER..HEADER + text_len]),
+                id_hex: hex(&p[0..4]),
+            };
+        }
+    }
+    Order::Unknown {
+        record_type: 40,
+        payload_hex: hex(p),
+    }
 }
 
 /// Decode a type-35 record: the production **Route destination** sub-form when
@@ -843,6 +927,8 @@ fn main() {
             34 => orders.push(decode_type34(&rec.payload)),
             35 => orders.push(decode_type35(&rec.payload)),
             37 => orders.push(decode_type37(&rec.payload)),
+            38 => orders.push(decode_type38(&rec.payload)),
+            40 => orders.push(decode_type40(&rec.payload)),
             42 => orders.push(decode_type42(&rec.payload)),
             44 => orders.push(decode_type44(&rec.payload)),
             t => orders.push(Order::Unknown {
@@ -1070,6 +1156,84 @@ mod tests {
                 assert_eq!(payload_hex, "87 00 0a 20 00 00");
             }
             other => panic!("expected Unknown, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn type38_decodes_per_player_relation_vector() {
+        // Ground truth from a hand-built 12-player game: display players 2 and 3
+        // set to Friend and Enemy, the rest Neutral. The payload is one byte per
+        // player (0-based index): byte 1 = 0x01 (Friend), byte 2 = 0x02 (Enemy).
+        let payload: [u8; 12] = [0, 1, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        match decode_type38(&payload) {
+            Order::PlayerRelationChange { relations } => {
+                assert_eq!(relations.len(), 12);
+                assert_eq!(relations[0], "neutral"); // self
+                assert_eq!(relations[1], "friend"); // display player 2
+                assert_eq!(relations[2], "enemy"); // display player 3
+                assert!(relations[3..].iter().all(|r| r == "neutral"));
+            }
+            other => panic!("expected PlayerRelationChange, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn type40_decodes_recipient_and_nibble_text() {
+        // Ground truth: four messages hand-sent from player 1 in a multi-player
+        // game. Recipient at b6-7 (0 = everybody), text length at b10-11, then
+        // the nibble-encoded text.
+        let cases: [(&[u8], u16, bool, &str); 4] = [
+            (
+                &[
+                    0x32, 0x00, 0xaf, 0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0b, 0x00, 0x32,
+                    0xe2, 0x02, 0xdf, 0x28, 0xe2, 0xd4, 0x7d, 0x6e, 0x2e, 0x7f,
+                ],
+                0,
+                true,
+                "hey everybody!",
+            ),
+            (
+                &[
+                    0x4a, 0x00, 0xaf, 0x06, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x09, 0x00, 0x32,
+                    0xe2, 0x0d, 0xc5, 0x1e, 0x22, 0x80, 0xcc, 0xe7,
+                ],
+                2,
+                false,
+                "hey player 2!",
+            ),
+            (
+                &[
+                    0x5c, 0x00, 0xaf, 0x06, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x03, 0x00, 0x93,
+                    0x33, 0x33,
+                ],
+                3,
+                false,
+                "shhhhh",
+            ),
+            (
+                &[
+                    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x07, 0x00, 0xe2,
+                    0x7d, 0xe0, 0x18, 0x20, 0xdb, 0x2f,
+                ],
+                1,
+                false,
+                "you are me",
+            ),
+        ];
+        for (payload, recip, broadcast, text) in cases {
+            match decode_type40(payload) {
+                Order::PlayerMessage {
+                    recipient_player,
+                    to_everybody,
+                    text: decoded,
+                    ..
+                } => {
+                    assert_eq!(recipient_player, recip);
+                    assert_eq!(to_everybody, broadcast);
+                    assert_eq!(decoded, text);
+                }
+                other => panic!("expected PlayerMessage, got {other:?}"),
+            }
         }
     }
 
