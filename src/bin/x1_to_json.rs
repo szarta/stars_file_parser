@@ -21,6 +21,8 @@
 //   type-29 production_queue_change — replace a planet's production queue
 //   type-30 battle_plan            — create or update a battle plan
 //   type-34 research_change        — change research allocation
+//   type-35 planet_route_change    — planet production Route destination (one
+//                                    sub-form of PlanetChange; destref = id<<15)
 //   type-37 fleets_merge           — merge one or more fleets into a base fleet
 //   type-42 set_fleet_battle_plan  — assign a battle plan to a fleet
 //   type-44 rename_fleet           — rename a fleet
@@ -446,11 +448,57 @@ enum Order {
         tail_hex: String,
     },
 
+    /// Type-35 PlanetChangeBlock — production **Route destination** sub-form.
+    ///
+    /// Type-35 is multiplexed; this decodes the route sub-form only, confirmed
+    /// against a Wine/shoestring-wm differential oracle (4/4 known
+    /// destinations).  6-byte payload: bytes 0-1 are the subject planet
+    /// (0-based index); bytes 2-5 are a packed destination reference
+    /// `destref = u32_le(payload[2:6])` equal to `display_id << 15`, so the
+    /// destination display id is `destref >> 15` (the low 15 bits are a
+    /// reference-type tag, 0 for a plain planet-by-id).  `destref == 0` is a
+    /// cleared route.  `route_target` is reported 0-based (`(destref >> 15) - 1`)
+    /// to match the crate's other planet-index fields, or `null` when cleared.
+    ///
+    /// Only emitted when `destref & 0x7fff == 0`; any other 6-byte type-35 (the
+    /// still-undecoded packet-target/other sub-form, whose field sits in bytes
+    /// 2-3) falls through to `Unknown` with raw `payload_hex`.
+    PlanetRouteChange {
+        planet_idx: u16,
+        /// 0-based destination planet index, or `None` when the route is cleared.
+        route_target: Option<u16>,
+    },
+
     /// Unknown or not-yet-decoded record type.
     Unknown {
         record_type: u16,
         payload_hex: String,
     },
+}
+
+/// Decode a type-35 record: the production **Route destination** sub-form when
+/// the route signature holds (`destref & 0x7fff == 0`), otherwise raw.  See the
+/// `PlanetRouteChange` doc comment and `knowledge/findings/planet_change_block`
+/// in the research workspace.
+fn decode_type35(p: &[u8]) -> Order {
+    if p.len() == 6 {
+        let destref = u32::from_le_bytes([p[2], p[3], p[4], p[5]]);
+        if destref & 0x7fff == 0 {
+            let route_target = if destref == 0 {
+                None
+            } else {
+                Some(((destref >> 15) - 1) as u16)
+            };
+            return Order::PlanetRouteChange {
+                planet_idx: read_u16_le(p, 0),
+                route_target,
+            };
+        }
+    }
+    Order::Unknown {
+        record_type: 35,
+        payload_hex: hex(p),
+    }
 }
 
 fn hex(p: &[u8]) -> String {
@@ -793,6 +841,7 @@ fn main() {
             29 => orders.push(decode_type29(&rec.payload)),
             30 => orders.push(decode_type30(&rec.payload)),
             34 => orders.push(decode_type34(&rec.payload)),
+            35 => orders.push(decode_type35(&rec.payload)),
             37 => orders.push(decode_type37(&rec.payload)),
             42 => orders.push(decode_type42(&rec.payload)),
             44 => orders.push(decode_type44(&rec.payload)),
@@ -961,6 +1010,66 @@ mod tests {
                 assert!(slots[0].count > 0 && slots[2].count > 0);
             }
             other => panic!("expected DesignSave, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn type35_route_destination_decodes_packed_planet_id() {
+        // Ground truth from the Wine/shoestring-wm differential oracle:
+        // homeworld Grendel (ID #56 -> subject index 0x37)
+        // routed to four known destinations in one session. The destination is
+        // packed as display_id << 15 in bytes 2-5; route_target is reported
+        // 0-based ((destref >> 15) - 1).
+        let cases: [(&[u8], u16, u16); 4] = [
+            (&[0x37, 0x00, 0x00, 0x00, 0x2e, 0x00], 55, 91), // Quiche  #92
+            (&[0x37, 0x00, 0x00, 0x80, 0x11, 0x00], 55, 34), // Flapjack #35
+            (&[0x37, 0x00, 0x00, 0x00, 0x2c, 0x00], 55, 87), // Luscious #88
+            (&[0x37, 0x00, 0x00, 0x80, 0x2f, 0x00], 55, 94), // Pisces  #95
+        ];
+        for (payload, subj, target0) in cases {
+            match decode_type35(payload) {
+                Order::PlanetRouteChange {
+                    planet_idx,
+                    route_target,
+                } => {
+                    assert_eq!(planet_idx, subj);
+                    assert_eq!(route_target, Some(target0));
+                }
+                other => panic!("expected PlanetRouteChange, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn type35_cleared_route_is_none() {
+        // destref == 0 => route cleared (low 15 bits still 0, so it is the route
+        // sub-form, with no destination).
+        match decode_type35(&[0xc4, 0x01, 0x00, 0x00, 0x00, 0x00]) {
+            Order::PlanetRouteChange {
+                planet_idx,
+                route_target,
+            } => {
+                assert_eq!(planet_idx, 452);
+                assert_eq!(route_target, None);
+            }
+            other => panic!("expected PlanetRouteChange, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn type35_non_route_subform_is_surfaced_raw() {
+        // Real .xN corpus record: field 0x200a sits in bytes 2-3 with bytes 4-5
+        // zero, so destref & 0x7fff != 0 — the packet/other sub-form, left raw
+        // per decode-faithfully-or-raw rather than mis-decoded as a route.
+        match decode_type35(&[0x87, 0x00, 0x0a, 0x20, 0x00, 0x00]) {
+            Order::Unknown {
+                record_type,
+                payload_hex,
+            } => {
+                assert_eq!(record_type, 35);
+                assert_eq!(payload_hex, "87 00 0a 20 00 00");
+            }
+            other => panic!("expected Unknown, got {other:?}"),
         }
     }
 
