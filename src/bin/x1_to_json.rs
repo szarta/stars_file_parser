@@ -11,7 +11,9 @@
 //
 // Confirmed order types (from reverse-engineering/PLAN.md R0.7, 2026-04-17):
 //
-//   type-1  manual_cargo_transfer  — waypoint-0 manual cargo load/unload
+//   type-1  manual_cargo_transfer  — waypoint-0 manual cargo load/unload (small,
+//                                    1-byte amount ≤127)
+//   type-2  manual_medium_cargo_transfer — same, 2-byte amount (128..32767)
 //   type-3  waypoint_delete        — delete a waypoint from a fleet's route
 //   type-4  waypoint_add           — add a new waypoint (always paired with type-5)
 //   type-5  waypoint_change_task   — set/change waypoint task (authoritative for task)
@@ -433,29 +435,34 @@ enum Order {
         payload_hex: String,
     },
 
-    /// Type-2: a fleet in orbit is being given its first movement waypoint.
+    /// Type-2 ManualMediumLoadUnloadTaskBlock — the **medium** (2-byte amount)
+    /// sibling of the type-1 waypoint-0 manual cargo transfer.
     ///
-    /// Emitted immediately before the fleet's type-4 WaypointAdd (waypoint_nr=1)
-    /// and only for a fleet that is currently orbiting a planet (not already
-    /// en route); it records which planet the fleet is leaving. Confirmed on 26
-    /// real records across two games: the fleet always matches the paired
-    /// WaypointAdd, and the planet always matches that fleet's orbit in the
-    /// corresponding `.mN` turn file.
+    /// The amount is stored in the smallest signed integer that holds it, and
+    /// the opcode is the width: type-1 uses a 1-byte amount (≤127), type-2 a
+    /// 2-byte amount (128..32767), type-25 a 4-byte amount. Confirmed against an
+    /// oracle: loading 210 kT Germanium produced a type-2 whose `b6-7`
+    /// = 210 with `resource_mask` = 0x04 (germanium), while an 11-unit colonist
+    /// load the same turn produced a type-1. Across the corpus every type-1
+    /// amount is ≤64 and every type-2 amount ≥208.
     ///
-    /// 8-byte payload. Two 2-byte slots carry the fleet_num (9-bit) and the
-    /// orbited planet index (full u16); `order_flag` (b4) selects the order:
-    /// 0x12 = fleet in bytes 0-1, 0x21 = fleet in bytes 2-3. b5 is always 0x08;
-    /// the trailing two bytes vary and are not yet decoded — both surfaced raw
-    /// rather than guessed.
-    FleetDepartOrbit {
+    /// 8-byte payload: fleet (9-bit) and planet (u16) in the first two 2-byte
+    /// slots, `order_flag` (b4) selecting the order (0x12 = fleet in bytes 0-1,
+    /// 0x21 = fleet in bytes 2-3); `resource_mask` (b5, one of 1=ironium,
+    /// 2=boranium, 4=germanium, 8=colonists); and the 2-byte `amount` (b6-7 LE).
+    /// (This replaces an earlier, incorrect "fleet depart orbit" reading: that
+    /// record's "trailing bytes" are the cargo amount, and the planet matching
+    /// the fleet's orbit is simply where a waypoint-0 transfer happens.)
+    ManualMediumCargoTransfer {
         fleet_num: u16,
         planet_idx: u16,
-        /// b4: 0x12 = fleet in bytes 0-1, 0x21 = fleet in bytes 2-3.
+        /// b4: 0x12 = fleet in bytes 0-1, 0x21 = fleet in bytes 2-3. Load is
+        /// 0x12; the unload encoding is not yet sampled.
         order_flag: u8,
-        /// b5, always observed 0x08; meaning not yet confirmed.
-        b5: u8,
-        /// Trailing bytes (b6 onward); vary between records, not yet decoded.
-        tail_hex: String,
+        /// b5: resource bit (1=ironium, 2=boranium, 4=germanium, 8=colonists).
+        resource_mask: u8,
+        /// b6-7 (LE u16): the amount transferred (kT, or colonist units).
+        amount: u16,
     },
 
     /// Type-35 PlanetChangeBlock — production **Route destination** sub-form.
@@ -713,12 +720,12 @@ fn decode_type2(p: &[u8]) -> Order {
         // 0x12 (and any other value) → fleet in bytes 0-1.
         (fleet9_at(p, 0), read_u16_le(p, 2))
     };
-    Order::FleetDepartOrbit {
+    Order::ManualMediumCargoTransfer {
         fleet_num,
         planet_idx,
         order_flag,
-        b5: if p.len() > 5 { p[5] } else { 0 },
-        tail_hex: hex(if p.len() > 6 { &p[6..] } else { &[] }),
+        resource_mask: if p.len() > 5 { p[5] } else { 0 },
+        amount: read_u16_le(p, 6),
     }
 }
 
@@ -1238,39 +1245,47 @@ mod tests {
     }
 
     #[test]
-    fn type2_decodes_fleet_and_orbited_planet_both_orderings() {
-        // order_flag 0x21: planet in bytes 0-1, fleet (9-bit) in bytes 2-3.
-        match decode_type2(&[0xa4, 0x01, 0x35, 0x0c, 0x21, 0x08, 0xfa, 0x00]) {
-            Order::FleetDepartOrbit {
+    fn type2_decodes_medium_cargo_transfer() {
+        // Oracle ground truth: loading 210 kT Germanium onto fleet 3 at planet
+        // 67 produced this type-2 — order_flag 0x12 (fleet in bytes 0-1),
+        // resource_mask 0x04 (germanium), amount 210 in bytes 6-7.
+        match decode_type2(&[0x03, 0x00, 0x43, 0x00, 0x12, 0x04, 0xd2, 0x00]) {
+            Order::ManualMediumCargoTransfer {
                 fleet_num,
                 planet_idx,
                 order_flag,
-                b5,
-                tail_hex,
+                resource_mask,
+                amount,
+            } => {
+                assert_eq!(fleet_num, 3);
+                assert_eq!(planet_idx, 67);
+                assert_eq!(order_flag, 0x12);
+                assert_eq!(resource_mask, 0x04);
+                assert_eq!(amount, 210);
+            }
+            other => panic!("expected ManualMediumCargoTransfer, got {other:?}"),
+        }
+        // order_flag 0x21: planet in bytes 0-1, fleet (9-bit) in bytes 2-3.
+        // Corpus record: 250 colonists (mask 0x08).
+        match decode_type2(&[0xa4, 0x01, 0x35, 0x0c, 0x21, 0x08, 0xfa, 0x00]) {
+            Order::ManualMediumCargoTransfer {
+                fleet_num,
+                planet_idx,
+                order_flag,
+                resource_mask,
+                amount,
             } => {
                 assert_eq!(fleet_num, 53);
                 assert_eq!(planet_idx, 420);
                 assert_eq!(order_flag, 0x21);
-                assert_eq!(b5, 0x08);
-                assert_eq!(tail_hex, "fa 00");
+                assert_eq!(resource_mask, 0x08);
+                assert_eq!(amount, 250);
             }
-            other => panic!("expected FleetDepartOrbit, got {other:?}"),
-        }
-        // order_flag 0x12: fleet (9-bit) in bytes 0-1, planet in bytes 2-3.
-        match decode_type2(&[0x44, 0x0c, 0xfc, 0x01, 0x12, 0x08, 0xfa, 0x00]) {
-            Order::FleetDepartOrbit {
-                fleet_num,
-                planet_idx,
-                ..
-            } => {
-                assert_eq!(fleet_num, 68);
-                assert_eq!(planet_idx, 508);
-            }
-            other => panic!("expected FleetDepartOrbit, got {other:?}"),
+            other => panic!("expected ManualMediumCargoTransfer, got {other:?}"),
         }
         // 9-bit fleet: bit 0 of the high byte extends the fleet number past 255.
         match decode_type2(&[0xf7, 0x01, 0x18, 0x16, 0x21, 0x08, 0xfa, 0x00]) {
-            Order::FleetDepartOrbit {
+            Order::ManualMediumCargoTransfer {
                 fleet_num,
                 planet_idx,
                 ..
@@ -1278,7 +1293,7 @@ mod tests {
                 assert_eq!(fleet_num, 24);
                 assert_eq!(planet_idx, 503);
             }
-            other => panic!("expected FleetDepartOrbit, got {other:?}"),
+            other => panic!("expected ManualMediumCargoTransfer, got {other:?}"),
         }
     }
 
